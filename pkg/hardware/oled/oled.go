@@ -24,12 +24,13 @@ import (
 	"periph.io/x/conn/v3/i2c/i2creg"
 	"periph.io/x/devices/v3/ssd1306"
 	"periph.io/x/devices/v3/ssd1306/image1bit"
+	"periph.io/x/host/v3"
 )
 
 const (
 	oledWidth         = 128
 	oledHeight        = 32
-	oledDefaultI2CBus = "/dev/i2c-1" // Common default, might need config/env var
+	oledDefaultI2CBus = "/dev/i2c-1" // Default, will be overridden by OLED_I2C_BUS env var if present
 )
 
 // OLEDDisplay handles drawing operations on the SSD1306.
@@ -44,7 +45,23 @@ type OLEDDisplay struct {
 
 // newOLEDDisplay initializes the I2C connection and the display driver.
 func newOLEDDisplay(conf *config.Config) (*OLEDDisplay, error) {
-	i2cBusName := oledDefaultI2CBus // TODO: Make configurable if needed
+	// Initialize host drivers first
+	if _, err := host.Init(); err != nil {
+		return nil, fmt.Errorf("failed to initialize periph host: %w", err)
+	}
+
+	// Get I2C bus name from environment variable or use default
+	i2cBusName := os.Getenv("OLED_I2C_BUS")
+	if i2cBusName == "" {
+		i2cBusName = oledDefaultI2CBus
+		log.Printf("OLED_I2C_BUS environment variable not set, using default: %s", i2cBusName)
+	} else {
+		log.Printf("Using I2C bus from environment variable: %s", i2cBusName)
+	}
+
+	// Check if we should try all available I2C buses if the specified one fails
+	tryAllBuses := os.Getenv("OLED_TRY_ALL_BUSES") == "1"
+
 	oledResetPinName := os.Getenv("OLED_RESET")
 	if oledResetPinName == "" {
 		log.Println("Warning: OLED_RESET environment variable not set. Display might not initialize correctly without reset.")
@@ -53,9 +70,40 @@ func newOLEDDisplay(conf *config.Config) (*OLEDDisplay, error) {
 	// Open I2C bus
 	i2cBus, err := i2creg.Open(i2cBusName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open I2C bus %s: %w", i2cBusName, err)
+		if !tryAllBuses {
+			return nil, fmt.Errorf("failed to open I2C bus %s: %w", i2cBusName, err)
+		}
+
+		// Try to find any available I2C bus
+		log.Printf("Failed to open specified I2C bus %s, trying to find available buses...", i2cBusName)
+
+		// Get list of available bus names
+		var busNames []string
+		for _, ref := range i2creg.All() {
+			busNames = append(busNames, ref.Name)
+		}
+
+		if len(busNames) == 0 {
+			return nil, fmt.Errorf("no I2C buses found on the system")
+		}
+
+		log.Printf("Found %d I2C buses, trying each one...", len(busNames))
+		var lastErr error
+
+		// Try each bus until one works
+		for _, busName := range busNames {
+			log.Printf("Trying I2C bus: %s", busName)
+			i2cBus, lastErr = i2creg.Open(busName)
+			if lastErr == nil {
+				log.Printf("Successfully opened I2C bus: %s", busName)
+				break
+			}
+		}
+
+		if lastErr != nil {
+			return nil, fmt.Errorf("failed to open any I2C bus: %w", lastErr)
+		}
 	}
-	// Note: Closing the bus will likely be handled globally at application shutdown
 
 	// Get reset pin if specified
 	var resetPin gpio.PinIO
@@ -91,9 +139,11 @@ func newOLEDDisplay(conf *config.Config) (*OLEDDisplay, error) {
 		Rotated: conf.OLED.Rotate, // Use rotation from config
 		// Reset:   resetPin, // Removed - Handle manually above
 	}
-	// NewI2C expects only bus and opts
+
+	// Try to create the device
 	dev, err := ssd1306.NewI2C(i2cBus, devOpts)
 	if err != nil {
+		// SSD1306 initialization failed
 		return nil, fmt.Errorf("failed to initialize SSD1306 device: %w", err)
 	}
 

@@ -202,8 +202,34 @@ If you prefer to set things up manually, follow these steps:
 - **Check service status**: `sudo systemctl status rockpi-penta`
 - **View logs**: `sudo journalctl -u rockpi-penta`
 - **Verify I2C**: Run `i2cdetect -y 1` to check if OLED display is detected
+
+### I2C Bus Issues
+
+If you see errors like `failed to open I2C bus /dev/i2c-1: i2creg: no bus found` in your logs, your system might be using different I2C bus numbers than the default. Use the included I2C setup script to automatically configure the correct bus:
+
+```bash
+sudo ./scripts/setup-i2c.sh
+```
+
+This script will:
+
+1. Detect all available I2C buses on your system
+2. Let you choose which bus to use or try all buses automatically
+3. Update the service file with the correct environment variables
+4. Provide instructions for restarting the service
+
+After running this script, restart the service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart rockpi-penta
+```
+
+### Other Common Issues
+
 - **Test fan**: Set `HARDWARE_PWM=0` and check if GPIO pins are accessible
 - **Permissions**: Make sure the service runs as root
+- **Missing hardware**: Ensure all hardware components are properly connected
 
 If I2C is not working, you may need to reboot after enabling it.
 
