@@ -2,6 +2,8 @@
 
 Go implementation of the RockPi Penta service for monitoring and controlling the SATA HAT.
 
+Repository: [https://github.com/GuilhermeVozniak/rockpi-penta-golang](https://github.com/GuilhermeVozniak/rockpi-penta-golang)
+
 ## Features
 
 - **CPU & System Monitoring**: Display CPU temperature, load, memory usage, and uptime.
@@ -31,7 +33,7 @@ cd rockpi-penta-golang
 
 This script will:
 
-- Install Go if not already present
+- Install Go 1.24.2 if not already present
 - Install required system packages
 - Enable I2C interface
 - Create default configuration file at `/etc/rockpi-penta.conf`
@@ -65,6 +67,38 @@ sudo systemctl start rockpi-penta
 ```
 
 That's it! The service will now run automatically at boot.
+
+## Uninstallation
+
+To uninstall the RockPi Penta service and its components, use the provided uninstall script:
+
+```bash
+sudo ./scripts/uninstall.sh
+```
+
+The script will:
+
+- Stop and disable the service
+- Remove the systemd service file
+- Remove the binary from /usr/local/bin
+- Optionally remove the configuration file (with confirmation)
+- Optionally remove Go installation (with confirmation)
+- Optionally remove local build artifacts (with confirmation)
+
+To completely remove all dependencies installed by the setup process, you can also run:
+
+```bash
+sudo ./scripts/uninstall-dependencies.sh
+```
+
+This additional script will:
+
+- Remove Go from /usr/local/go (optional)
+- Remove system packages like i2c-tools and curl (optional)
+- Disable I2C modules in system configuration (optional)
+- Clean up unused dependencies with apt autoremove (optional)
+
+Each step in the dependency uninstallation process requires confirmation, allowing you to selectively remove only what you want.
 
 ## Configuration
 
@@ -139,7 +173,7 @@ Adjust the environment variables to match your specific hardware setup.
 
 If you prefer to set things up manually, follow these steps:
 
-1. Install Go (version 1.20 or newer)
+1. Install Go (version 1.24.2)
 2. Enable I2C interface via `raspi-config`
 3. Build the application: `go build -o rockpi-penta-service ./cmd/rockpi-penta-service`
 4. Create a configuration file at `/etc/rockpi-penta.conf` (use example above)

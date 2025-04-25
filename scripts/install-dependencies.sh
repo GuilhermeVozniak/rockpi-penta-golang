@@ -9,17 +9,78 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-# Install Go if not already installed
+# Install Go 1.24.2 if not already installed or if version doesn't match
+REQUIRED_GO_VERSION="1.24.2"
+INSTALL_GO=false
+
 if ! command -v go &> /dev/null; then
-    echo "Go not found, installing..."
-    apt-get update
-    apt-get install -y golang
+    echo "Go not found, will install version $REQUIRED_GO_VERSION..."
+    INSTALL_GO=true
+else
+    CURRENT_GO_VERSION=$(go version | awk '{print $3}' | sed 's/go//')
+    if [ "$CURRENT_GO_VERSION" != "$REQUIRED_GO_VERSION" ]; then
+        echo "Go version $CURRENT_GO_VERSION detected, but version $REQUIRED_GO_VERSION is required."
+        echo "Will install Go $REQUIRED_GO_VERSION..."
+        INSTALL_GO=true
+    else
+        echo "Go $REQUIRED_GO_VERSION is already installed."
+    fi
+fi
+
+if [ "$INSTALL_GO" = true ]; then
+    echo "Installing Go $REQUIRED_GO_VERSION..."
+    
+    # Determine architecture
+    ARCH=$(uname -m)
+    if [ "$ARCH" = "x86_64" ]; then
+        GO_ARCH="amd64"
+    elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+        GO_ARCH="arm64"
+    elif [[ "$ARCH" == arm* ]]; then
+        GO_ARCH="armv6l"
+    else
+        echo "Unsupported architecture: $ARCH"
+        exit 1
+    fi
+    
+    # Setup temporary directory
+    TMP_DIR=$(mktemp -d)
+    cd "$TMP_DIR"
+    
+    # Download and install Go
+    GO_PACKAGE="go${REQUIRED_GO_VERSION}.linux-${GO_ARCH}.tar.gz"
+    GO_URL="https://go.dev/dl/${GO_PACKAGE}"
+    
+    echo "Downloading Go from $GO_URL..."
+    if ! curl -LO "$GO_URL"; then
+        echo "Failed to download Go. Please check your internet connection."
+        exit 1
+    fi
+    
+    echo "Extracting Go to /usr/local..."
+    rm -rf /usr/local/go
+    tar -C /usr/local -xzf "$GO_PACKAGE"
+    
+    # Set up environment if needed
+    if ! grep -q "export PATH=\$PATH:/usr/local/go/bin" /etc/profile.d/go.sh 2>/dev/null; then
+        echo 'export PATH=$PATH:/usr/local/go/bin' > /etc/profile.d/go.sh
+        chmod +x /etc/profile.d/go.sh
+    fi
+    
+    # Add to current session's PATH
+    export PATH=$PATH:/usr/local/go/bin
+    
+    # Clean up
+    cd - > /dev/null
+    rm -rf "$TMP_DIR"
+    
+    echo "Go $REQUIRED_GO_VERSION installed successfully."
 fi
 
 # Install required system packages
 echo "Installing required system packages..."
 apt-get update
-apt-get install -y i2c-tools
+apt-get install -y i2c-tools curl
 
 # Enable I2C if not already enabled
 if ! grep -q "^i2c-dev" /etc/modules; then
