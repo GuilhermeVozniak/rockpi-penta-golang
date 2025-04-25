@@ -33,7 +33,7 @@ cd rockpi-penta-golang
 
 This script will:
 
-- Install Go 1.24.2 if not already present
+- Install Go 1.24.2 (which provides Go 1.24)
 - Install required system packages
 - Enable I2C interface
 - Create default configuration file at `/etc/rockpi-penta.conf`
@@ -173,7 +173,7 @@ Adjust the environment variables to match your specific hardware setup.
 
 If you prefer to set things up manually, follow these steps:
 
-1. Install Go (version 1.24.2)
+1. Install Go (version 1.24)
 2. Enable I2C interface via `raspi-config`
 3. Build the application: `go build -o rockpi-penta-service ./cmd/rockpi-penta-service`
 4. Create a configuration file at `/etc/rockpi-penta.conf` (use example above)

@@ -10,25 +10,29 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 # Install Go 1.24.2 if not already installed or if version doesn't match
-REQUIRED_GO_VERSION="1.24.2"
+GO_VERSION="1.24.2"  # Full version for downloading
+GO_MOD_VERSION="1.24"  # Version format for go.mod
 INSTALL_GO=false
 
 if ! command -v go &> /dev/null; then
-    echo "Go not found, will install version $REQUIRED_GO_VERSION..."
+    echo "Go not found, will install version $GO_VERSION..."
     INSTALL_GO=true
 else
     CURRENT_GO_VERSION=$(go version | awk '{print $3}' | sed 's/go//')
-    if [ "$CURRENT_GO_VERSION" != "$REQUIRED_GO_VERSION" ]; then
-        echo "Go version $CURRENT_GO_VERSION detected, but version $REQUIRED_GO_VERSION is required."
-        echo "Will install Go $REQUIRED_GO_VERSION..."
+    # Remove patch version for comparison with GO_MOD_VERSION
+    CURRENT_GO_MAJOR_MINOR=$(echo "$CURRENT_GO_VERSION" | cut -d. -f1-2)
+    
+    if [[ "$CURRENT_GO_MAJOR_MINOR" != "$GO_MOD_VERSION" ]]; then
+        echo "Go version $CURRENT_GO_VERSION detected, but version $GO_VERSION is required."
+        echo "Will install Go $GO_VERSION..."
         INSTALL_GO=true
     else
-        echo "Go $REQUIRED_GO_VERSION is already installed."
+        echo "Go $CURRENT_GO_MAJOR_MINOR is already installed and compatible with required version $GO_MOD_VERSION."
     fi
 fi
 
 if [ "$INSTALL_GO" = true ]; then
-    echo "Installing Go $REQUIRED_GO_VERSION..."
+    echo "Installing Go $GO_VERSION..."
     
     # Determine architecture
     ARCH=$(uname -m)
@@ -48,7 +52,7 @@ if [ "$INSTALL_GO" = true ]; then
     cd "$TMP_DIR"
     
     # Download and install Go
-    GO_PACKAGE="go${REQUIRED_GO_VERSION}.linux-${GO_ARCH}.tar.gz"
+    GO_PACKAGE="go${GO_VERSION}.linux-${GO_ARCH}.tar.gz"
     GO_URL="https://go.dev/dl/${GO_PACKAGE}"
     
     echo "Downloading Go from $GO_URL..."
@@ -74,7 +78,8 @@ if [ "$INSTALL_GO" = true ]; then
     cd - > /dev/null
     rm -rf "$TMP_DIR"
     
-    echo "Go $REQUIRED_GO_VERSION installed successfully."
+    echo "Go $GO_VERSION installed successfully."
+    echo "Note: In go.mod, the version is specified as $GO_MOD_VERSION (without patch version)."
 fi
 
 # Install required system packages
