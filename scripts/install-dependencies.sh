@@ -3,10 +3,29 @@ set -e
 
 echo "Installing RockPi Penta dependencies and configuration..."
 
+# Process command line arguments
+FORCE_OVERRIDE=false
+if [[ "$1" == "--force" || "$1" == "-f" ]]; then
+    FORCE_OVERRIDE=true
+    echo "Force override mode activated - will replace existing configurations"
+fi
+
 # Check if running as root
 if [ "$(id -u)" -ne 0 ]; then
     echo "This script must be run as root. Please use sudo."
     exit 1
+fi
+
+# If not in force mode, ask about overriding configurations
+if [ "$FORCE_OVERRIDE" = false ]; then
+    read -p "Do you want to override any existing configurations? (y/n): " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        FORCE_OVERRIDE=true
+        echo "Will override existing configurations."
+    else
+        echo "Will preserve existing configurations where present."
+    fi
 fi
 
 # Install Go 1.24.2 if not already installed or if version doesn't match
@@ -16,6 +35,9 @@ INSTALL_GO=false
 
 if ! command -v go version &> /dev/null; then
     echo "Go not found, will install version $GO_VERSION..."
+    INSTALL_GO=true
+elif [ "$FORCE_OVERRIDE" = true ]; then
+    echo "Force override: Will reinstall Go $GO_VERSION..."
     INSTALL_GO=true
 else
     CURRENT_GO_VERSION=$(go version | awk '{print $3}' | sed 's/go//')
@@ -66,10 +88,8 @@ if [ "$INSTALL_GO" = true ]; then
     tar -C /usr/local -xzf "$GO_PACKAGE"
     
     # Set up environment if needed
-    if ! grep -q "export PATH=\$PATH:/usr/local/go/bin" /etc/profile.d/go.sh 2>/dev/null; then
-        echo 'export PATH=$PATH:/usr/local/go/bin' > /etc/profile.d/go.sh
-        chmod +x /etc/profile.d/go.sh
-    fi
+    echo 'export PATH=$PATH:/usr/local/go/bin' > /etc/profile.d/go.sh
+    chmod +x /etc/profile.d/go.sh
     
     # Add to current session's PATH
     export PATH=$PATH:/usr/local/go/bin
@@ -89,18 +109,18 @@ echo "Checking required system packages..."
 PACKAGES_TO_INSTALL=""
 
 # Check for i2c-tools
-if ! dpkg -l | grep -q i2c-tools; then
+if ! dpkg -l | grep -q i2c-tools || [ "$FORCE_OVERRIDE" = true ]; then
     PACKAGES_TO_INSTALL="$PACKAGES_TO_INSTALL i2c-tools"
 fi
 
 # Check for curl
-if ! command -v curl &> /dev/null; then
+if ! command -v curl &> /dev/null || [ "$FORCE_OVERRIDE" = true ]; then
     PACKAGES_TO_INSTALL="$PACKAGES_TO_INSTALL curl"
 fi
 
 # Install any missing packages
 if [ -n "$PACKAGES_TO_INSTALL" ]; then
-    echo "Installing missing packages:$PACKAGES_TO_INSTALL"
+    echo "Installing packages:$PACKAGES_TO_INSTALL"
     apt-get update
     apt-get install -y $PACKAGES_TO_INSTALL
 else
@@ -111,9 +131,14 @@ fi
 echo "Enabling I2C interface..."
 I2C_ENABLED=false
 
-# Check if already enabled in /etc/modules
-if ! grep -q "^i2c-dev" /etc/modules; then
-    echo "Adding i2c-dev to /etc/modules..."
+# Always update modules when in force mode
+if ! grep -q "^i2c-dev" /etc/modules || [ "$FORCE_OVERRIDE" = true ]; then
+    if [ "$FORCE_OVERRIDE" = true ] && grep -q "^i2c-dev" /etc/modules; then
+        echo "Force override: Updating i2c-dev in /etc/modules..."
+        sed -i '/^i2c-dev/d' /etc/modules
+    else
+        echo "Adding i2c-dev to /etc/modules..."
+    fi
     echo "i2c-dev" >> /etc/modules
     I2C_ENABLED=true
 else
@@ -122,8 +147,13 @@ fi
 
 # Enable I2C in config.txt if it exists (Raspberry Pi specific)
 if [ -f "/boot/config.txt" ]; then
-    if ! grep -q "^dtparam=i2c_arm=on" /boot/config.txt; then
-        echo "Enabling I2C in /boot/config.txt..."
+    if ! grep -q "^dtparam=i2c_arm=on" /boot/config.txt || [ "$FORCE_OVERRIDE" = true ]; then
+        if [ "$FORCE_OVERRIDE" = true ] && grep -q "^dtparam=i2c_arm=on" /boot/config.txt; then
+            echo "Force override: Updating I2C in /boot/config.txt..."
+            sed -i '/^dtparam=i2c_arm=on/d' /boot/config.txt
+        else
+            echo "Enabling I2C in /boot/config.txt..."
+        fi
         echo "dtparam=i2c_arm=on" >> /boot/config.txt
         I2C_ENABLED=true
     else
@@ -145,8 +175,14 @@ mkdir -p /etc
 
 # Create default configuration file
 CONFIG_FILE="/etc/rockpi-penta.conf"
-if [ ! -f "$CONFIG_FILE" ]; then
-    echo "Creating default configuration file at $CONFIG_FILE..."
+if [ ! -f "$CONFIG_FILE" ] || [ "$FORCE_OVERRIDE" = true ]; then
+    if [ -f "$CONFIG_FILE" ] && [ "$FORCE_OVERRIDE" = true ]; then
+        echo "Force override: Replacing existing configuration file at $CONFIG_FILE..."
+        rm -f "$CONFIG_FILE"
+    else
+        echo "Creating default configuration file at $CONFIG_FILE..."
+    fi
+    
     cat > "$CONFIG_FILE" << 'EOF'
 [fan]
 # When the temperature is above lv0 (35°C), the fan at 25% power,
@@ -185,12 +221,19 @@ EOF
     echo "Configuration file created successfully."
 else
     echo "Configuration file already exists at $CONFIG_FILE."
+    echo "Run with --force to override existing configuration."
 fi
 
 # Create systemd service file
 SERVICE_FILE="/etc/systemd/system/rockpi-penta.service"
-if [ ! -f "$SERVICE_FILE" ]; then
-    echo "Creating systemd service file..."
+if [ ! -f "$SERVICE_FILE" ] || [ "$FORCE_OVERRIDE" = true ]; then
+    if [ -f "$SERVICE_FILE" ] && [ "$FORCE_OVERRIDE" = true ]; then
+        echo "Force override: Replacing existing service file at $SERVICE_FILE..."
+        rm -f "$SERVICE_FILE"
+    else
+        echo "Creating systemd service file..."
+    fi
+    
     cat > "$SERVICE_FILE" << 'EOF'
 [Unit]
 Description=RockPi Penta Service
@@ -215,11 +258,17 @@ EOF
     echo "Systemd service file created successfully."
 else
     echo "Systemd service file already exists at $SERVICE_FILE."
+    echo "Run with --force to override existing service file."
+fi
+
+# If we made changes to the service file, reload systemd
+if [ -f "$SERVICE_FILE" ] && [ "$FORCE_OVERRIDE" = true ]; then
+    echo "Reloading systemd daemon..."
+    systemctl daemon-reload
 fi
 
 echo "Dependencies and configuration setup complete!"
 echo "Next steps:"
 echo "1. Run './scripts/build.sh' to build the application"
-echo "2. After building, run 'sudo systemctl daemon-reload'"
-echo "3. Enable the service with 'sudo systemctl enable rockpi-penta'"
-echo "4. Start the service with 'sudo systemctl start rockpi-penta'" 
+echo "2. Enable the service with 'sudo systemctl enable rockpi-penta'"
+echo "3. Start the service with 'sudo systemctl start rockpi-penta'" 
