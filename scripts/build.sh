@@ -61,8 +61,29 @@ if [ $? -eq 0 ]; then
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             echo "Installing binary to /usr/local/bin..."
+            
+            # Check if service is running and stop it temporarily
+            SERVICE_WAS_RUNNING=false
+            if systemctl is-active --quiet rockpi-penta; then
+                echo "Service is currently running. Stopping it temporarily..."
+                systemctl stop rockpi-penta
+                SERVICE_WAS_RUNNING=true
+            fi
+            
+            # Wait a moment for the process to fully stop
+            sleep 1
+            
+            # Copy the binary
             cp build/rockpi-penta-service /usr/local/bin/
             chmod +x /usr/local/bin/rockpi-penta-service
+            
+            # Restart service if it was running
+            if [ "$SERVICE_WAS_RUNNING" = true ]; then
+                echo "Restarting the service..."
+                systemctl start rockpi-penta
+                echo "Service restarted successfully."
+            fi
+            
             echo "Installation complete!"
             echo "To start the service, run: sudo systemctl start rockpi-penta"
             echo "To enable at boot: sudo systemctl enable rockpi-penta"
