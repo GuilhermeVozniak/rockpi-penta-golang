@@ -45,6 +45,24 @@ func main() {
 		log.Printf("Warning: Initial disk info query failed: %v", err)
 	}
 
+	// Initialize disk temperature monitoring
+	log.Println("Initializing disk temperature monitoring...")
+	disks, err := sysinfo.DetectDisks()
+	if err != nil {
+		log.Printf("Warning: Could not detect disks for temperature monitoring: %v", err)
+	} else {
+		log.Printf("Disk temperature monitoring enabled for: %v", disks)
+		// Try to get an initial reading
+		temps, err := sysinfo.GetAllDiskTemperatures()
+		if err != nil {
+			log.Printf("Warning: Could not get initial disk temperatures: %v", err)
+		} else {
+			for disk, temp := range temps {
+				log.Printf("Disk %s temperature: %.1f°C", disk, temp)
+			}
+		}
+	}
+
 	// Initialize OLED (checks for top board presence)
 	oledDisplay, err := oled.InitializeOLED(conf)
 	if err != nil {

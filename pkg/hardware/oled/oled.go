@@ -228,128 +228,172 @@ func (o *OLEDDisplay) Goodbye() error {
 	return errShow
 }
 
-// DisplayPage shows a specific page of system information.
+// DisplayPage renders a specific information page.
 func (o *OLEDDisplay) DisplayPage(pageIndex int) error {
 	o.Clear()
+	white := color.RGBA{255, 255, 255, 255}
 
-	// Fetch info (handle errors gracefully)
-	uptime, errUptime := sysinfo.GetUptime()
-	if errUptime != nil {
-		uptime = "Uptime: Err"
-		log.Println(errUptime)
+	// Draw header with page number
+	pageType := ""
+	switch pageIndex {
+	case 0:
+		pageType = "SYSTEM"
+	case 1:
+		pageType = "DISK"
+	case 2:
+		pageType = "DISK TEMP"
+	case 3:
+		pageType = "NET"
+	default:
+		pageType = fmt.Sprintf("PAGE %d", pageIndex+1)
 	}
-	cpuTemp, errTemp := sysinfo.GetCPUTemp(o.conf.OLED.FTemp)
-	if errTemp != nil {
-		cpuTemp = "Temp: Err"
-		log.Println(errTemp)
-	}
-	ipAddr, errIP := sysinfo.GetIPAddress()
-	if errIP != nil {
-		ipAddr = "IP: Err"
-		log.Println(errIP)
-	}
-	cpuLoad, errLoad := sysinfo.GetCPULoad()
-	if errLoad != nil {
-		cpuLoad = "Load: Err"
-		log.Println(errLoad)
-	}
-	memUsage, errMem := sysinfo.GetMemUsage()
-	if errMem != nil {
-		memUsage = "Mem: Err"
-		log.Println(errMem)
-	}
-	diskLines, errDisk := sysinfo.FormatDiskInfoForOLED()
-	if errDisk != nil {
-		diskLines = []string{"Disk: Err"}
-		log.Println(errDisk)
+	o.DrawText(0, 13, fmt.Sprintf("= %s =", pageType), white)
+
+	var lines []string
+
+	switch pageIndex {
+	case 0: // System info page
+		sysPage1 := []string{
+			"", // Empty line after header
+			"",
+		}
+
+		// Get system metrics
+		uptime, errUp := sysinfo.GetUptime()
+		if errUp != nil {
+			lines = []string{"Error getting uptime"}
+			break
+		}
+
+		temp, errTemp := sysinfo.GetCPUTemp(o.conf.OLED.FTemp)
+		if errTemp != nil {
+			lines = []string{"Error getting CPU temp"}
+			break
+		}
+
+		mem, errMem := sysinfo.GetMemUsage()
+		if errMem != nil {
+			lines = []string{"Error getting memory usage"}
+			break
+		}
+
+		load, errLoad := sysinfo.GetCPULoad()
+		if errLoad != nil {
+			lines = []string{"Error getting CPU load"}
+			break
+		}
+
+		lines = append(sysPage1, uptime, temp, mem, load)
+
+	case 1: // Disk usage page
+		diskLines, errDisk := sysinfo.FormatDiskInfoForOLED()
+		if errDisk != nil {
+			lines = []string{"Error getting disk info", errDisk.Error()}
+			break
+		}
+		lines = diskLines
+
+	case 2: // Disk temperature page
+		diskTempLines, errDiskTemp := sysinfo.FormatDiskTemperaturesForOLED()
+		if errDiskTemp != nil {
+			lines = []string{"Error getting disk temps", errDiskTemp.Error()}
+			break
+		}
+		lines = diskTempLines
+
+	case 3: // Network page
+		ip, errIP := sysinfo.GetIPAddress()
+		if errIP != nil {
+			lines = []string{"Error getting IP address"}
+			break
+		}
+		lines = []string{"", "", ip} // Simple for now
+
+	default:
+		lines = []string{"", "Unknown page", fmt.Sprintf("Index: %d", pageIndex)}
 	}
 
-	numPages := 3
-	currentPage := pageIndex % numPages
-	log.Printf("Displaying OLED Page %d", currentPage)
-
-	switch currentPage {
-	case 0: // Uptime, Temp, IP
-		o.DrawText(0, o.lineHeight, uptime, color.White)
-		o.DrawText(0, o.lineHeight*2, cpuTemp, color.White)
-		o.DrawText(0, o.lineHeight*3, ipAddr, color.White)
-	case 1: // CPU Load, Mem
-		o.DrawText(0, o.lineHeight+2, cpuLoad, color.White)
-		o.DrawText(0, o.lineHeight*2+4, memUsage, color.White)
-	case 2: // Disk Info
-		y := o.lineHeight
-		for i, line := range diskLines {
-			if i >= 3 {
-				break
-			} // Max 3 lines on 32px display
-			o.DrawText(0, y, line, color.White)
-			y += o.lineHeight
+	// Draw lines
+	lineHeight := o.lineHeight
+	y := 13 + lineHeight // Start after header
+	for _, line := range lines {
+		o.DrawText(0, y, line, white)
+		y += lineHeight
+		if y >= oledHeight {
+			break // Don't try to draw outside the display
 		}
 	}
 
 	return o.Show()
 }
 
-// RunSlider manages the automatic and manual OLED page sliding.
+// RunSlider handles automatic cycling through OLED info pages.
 func RunSlider(conf *config.Config, oled *OLEDDisplay, buttonChan <-chan button.ButtonEvent, stopChan chan struct{}) {
-	log.Println("Starting OLED slider...")
-	// Convert float64 seconds to time.Duration
-	sliderInterval := time.Duration(conf.Slider.Time * float64(time.Second))
-	ticker := time.NewTicker(sliderInterval)
-	defer ticker.Stop()
-
-	displayCurrentPage := func() {
-		if err := oled.DisplayPage(conf.Idx.Load()); err != nil {
-			log.Printf("Error displaying OLED page: %v", err)
-		}
+	if oled == nil {
+		log.Println("Warning: RunSlider called with nil OLED. Exiting slider.")
+		return
 	}
 
-	// Initial display
-	displayCurrentPage()
+	log.Println("Starting OLED slider...")
 
+	const numPages = 4 // Updated: Now includes disk temperature page
+
+	// Initialize to -1 to start on page 0 on first tick
+	idx := conf.Idx.Load()
+	if idx < 0 || idx >= numPages {
+		idx = 0
+		conf.Idx.Store(idx)
+	}
+
+	// Immediately show the current page
+	if err := oled.DisplayPage(idx); err != nil {
+		log.Printf("Error displaying initial OLED page: %v", err)
+	}
+
+	// Create timer for auto-sliding
+	var timer *time.Timer
+	var resetTimer func()
+	resetTimer = func() {
+		if timer != nil {
+			timer.Stop()
+		}
+		// Only auto-slide if enabled in config
+		if conf.Slider.Auto {
+			timer = time.AfterFunc(time.Duration(conf.Slider.Time*float64(time.Second)), func() {
+				// Advance to next page
+				idx = (idx + 1) % numPages
+				conf.Idx.Store(idx)
+				if err := oled.DisplayPage(idx); err != nil {
+					log.Printf("Error auto-advancing OLED page: %v", err)
+				}
+				resetTimer() // Schedule next auto-slide
+			})
+		}
+	}
+	resetTimer()
+
+	// Main event loop
 	for {
 		select {
-		case event := <-buttonChan:
-			// Check if the action for this button event is 'slider'
-			action := button.EventNone // Default action
-			switch event {
-			case button.EventClick:
-				action = button.ButtonEvent(conf.Key.Click)
-			case button.EventTwice:
-				action = button.ButtonEvent(conf.Key.Twice)
-			case button.EventPress:
-				action = button.ButtonEvent(conf.Key.Press)
-			}
-
-			if action == "slider" {
-				log.Println("Slider event triggered by button.")
-				conf.Idx.Add(1)
-				displayCurrentPage()
-				// Reset timer if auto-sliding is enabled
-				if conf.Slider.Auto {
-					// Convert float64 seconds to time.Duration
-					sliderInterval = time.Duration(conf.Slider.Time * float64(time.Second))
-					ticker.Reset(sliderInterval)
+		case evt := <-buttonChan:
+			if evt == button.EventClick {
+				// Advance to next page on button click
+				idx = (idx + 1) % numPages
+				conf.Idx.Store(idx)
+				if err := oled.DisplayPage(idx); err != nil {
+					log.Printf("Error advancing OLED page on button click: %v", err)
 				}
+				resetTimer() // Reset auto-slide timer
 			}
-
-		case <-ticker.C:
-			if conf.Slider.Auto {
-				log.Println("Slider event triggered by timer.")
-				conf.Idx.Add(1)
-				displayCurrentPage()
-			} else {
-				// If auto is off, the ticker still runs but does nothing
-				// We could stop/start it, but this is simpler.
-			}
-
 		case <-stopChan:
-			log.Println("Stopping OLED slider...")
-			// Attempt to clear display on exit
+			if timer != nil {
+				timer.Stop()
+			}
 			oled.Clear()
 			if err := oled.Show(); err != nil {
-				log.Printf("Warning: Failed to clear OLED on exit: %v", err)
+				log.Printf("Error clearing OLED on shutdown: %v", err)
 			}
+			log.Println("OLED slider stopped.")
 			return
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"rockpi-penta-golang/pkg/config"
@@ -17,9 +18,10 @@ import (
 )
 
 const (
-	fanCheckInterval = 1 * time.Second
-	fanTempCacheTime = 60 * time.Second
-	fanSysfsPwmPath  = "/sys/class/pwm"
+	fanCheckInterval      = 1 * time.Second
+	fanTempCacheTime      = 60 * time.Second
+	fanSysfsPwmPath       = "/sys/class/pwm"
+	softwarePwmResolution = 100 // Higher values provide smoother PWM but use more CPU
 )
 
 // FanController defines the interface for controlling the fan.
@@ -35,6 +37,7 @@ type hardwarePWMFan struct {
 	exportPath string
 	pinPath    string
 	periodNs   int64
+	lastDuty   float64 // Cache last value to avoid unnecessary writes
 }
 
 // newHardwarePWMFan initializes hardware PWM via sysfs.
@@ -49,6 +52,7 @@ func newHardwarePWMFan(chipNumStr string, periodNs int64) (FanController, error)
 		exportPath: fmt.Sprintf("%s/export", chipPath),
 		pinPath:    fmt.Sprintf("%s/pwm0", chipPath), // Assuming pwm0
 		periodNs:   periodNs,
+		lastDuty:   -1, // Invalid initial value to ensure first update
 	}
 
 	// Export pwm0 if not already exported
@@ -88,12 +92,19 @@ func (h *hardwarePWMFan) SetDutyCycle(duty float64) error {
 		duty = 1
 	}
 
+	// Avoid unnecessary writes if duty cycle hasn't changed significantly
+	if h.lastDuty >= 0 && abs(duty-h.lastDuty) < 0.01 {
+		return nil
+	}
+
 	dutyNs := int64(float64(h.periodNs) * duty)
 	dutyPath := fmt.Sprintf("%s/duty_cycle", h.pinPath)
 
 	if err := os.WriteFile(dutyPath, []byte(strconv.FormatInt(dutyNs, 10)), 0644); err != nil {
 		return fmt.Errorf("failed to set PWM duty cycle on %s: %w", h.pinPath, err)
 	}
+
+	h.lastDuty = duty
 	return nil
 }
 
@@ -112,13 +123,15 @@ func (h *hardwarePWMFan) Cleanup() error {
 	return nil
 }
 
-// --- Software PWM (GPIO) ---
+// --- Optimized Software PWM (GPIO) ---
 
 type softwarePWMFan struct {
-	pin      gpio.PinIO
-	stopChan chan struct{}
-	dutyChan chan float64
-	period   time.Duration
+	pin          gpio.PinIO
+	stopChan     chan struct{}
+	dutyChan     chan float64
+	period       time.Duration
+	currentDuty  atomic.Uint64 // Use atomic for safe concurrent access
+	sleepEnabled bool          // Flag to determine if we should use more efficient sleep pattern
 }
 
 // newSoftwarePWMFan initializes GPIO pin for software PWM.
@@ -136,59 +149,159 @@ func newSoftwarePWMFan(chipName, lineNumStr string, period time.Duration) (FanCo
 		return nil, fmt.Errorf("failed to set fan pin %s to output: %w", p.Name(), err)
 	}
 
+	// Check if OS has efficient sleep support for nanosleep
+	// This is a simple heuristic - in practice, this should be true on Linux
+	sleepEnabled := true
+
 	s := &softwarePWMFan{
-		pin:      p,
-		stopChan: make(chan struct{}),
-		dutyChan: make(chan float64, 1), // Buffered channel for duty cycle updates
-		period:   period,
+		pin:          p,
+		stopChan:     make(chan struct{}),
+		dutyChan:     make(chan float64, 1), // Buffered channel for duty cycle updates
+		period:       period,
+		sleepEnabled: sleepEnabled,
 	}
+
+	// Store initial duty cycle of 0
+	s.currentDuty.Store(0)
 
 	go s.runPWM() // Start the PWM goroutine
 	log.Printf("Initialized Software PWM fan controller on pin %s", p.Name())
 	return s, nil
 }
 
-// runPWM simulates PWM signal in a goroutine.
+// runPWM simulates PWM signal in a goroutine with optimized CPU usage.
 func (s *softwarePWMFan) runPWM() {
-	currentDuty := 0.0
-	ticker := time.NewTicker(s.period)
-	defer ticker.Stop()
+	// For extremely low duty cycles (fan off) or extremely high (fan full)
+	// we'll optimize by not toggling and just setting the pin state
+	pinState := gpio.Low
+	var ticker *time.Ticker
 
-	for {
-		select {
-		case duty := <-s.dutyChan:
-			currentDuty = duty
-			if currentDuty < 0.01 {
-				currentDuty = 0
+	if s.sleepEnabled {
+		// Use more efficient approach for systems with good sleep support
+		ticker = time.NewTicker(s.period / softwarePwmResolution)
+		defer ticker.Stop()
+
+		var counter int
+
+		for {
+			select {
+			case duty := <-s.dutyChan:
+				// Clamp duty cycle values
+				if duty < 0.01 {
+					duty = 0
+				} else if duty > 0.99 {
+					duty = 1.0
+				}
+				// Store new duty cycle atomically
+				s.currentDuty.Store(uint64(duty * float64(softwarePwmResolution)))
+				log.Printf("Software PWM duty set to %.2f", duty)
+
+				// Special cases optimization
+				if duty <= 0 || duty >= 1.0 {
+					if duty <= 0 {
+						pinState = gpio.Low
+					} else {
+						pinState = gpio.High
+					}
+					s.pin.Out(pinState) // Set pin state directly for special cases
+				}
+
+				// Reset counter on duty change
+				counter = 0
+
+			case <-ticker.C:
+				duty := float64(s.currentDuty.Load()) / float64(softwarePwmResolution)
+
+				// Skip PWM for special cases
+				if duty <= 0 || duty >= 1.0 {
+					continue
+				}
+
+				// Use counter-based PWM approach
+				counter = (counter + 1) % softwarePwmResolution
+				threshold := int(duty * float64(softwarePwmResolution))
+
+				if counter < threshold {
+					if pinState != gpio.High {
+						s.pin.Out(gpio.High)
+						pinState = gpio.High
+					}
+				} else {
+					if pinState != gpio.Low {
+						s.pin.Out(gpio.Low)
+						pinState = gpio.Low
+					}
+				}
+
+			case <-s.stopChan:
+				log.Println("Stopping software PWM...")
+				s.pin.Out(gpio.Low) // Ensure fan is off on stop
+				return
 			}
-			if currentDuty > 0.99 {
-				currentDuty = 1.0
-			}
-			log.Printf("Software PWM duty set to %.2f", currentDuty)
-		case <-ticker.C:
-			if currentDuty <= 0 { // Ensure pin is low if duty is 0
-				s.pin.Out(gpio.Low)
-				continue
-			}
-			if currentDuty >= 1.0 { // Ensure pin is high if duty is 1
+		}
+	} else {
+		// Fallback to original approach for systems with poor sleep behavior
+		ticker = time.NewTicker(s.period)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case duty := <-s.dutyChan:
+				if duty < 0.01 {
+					duty = 0
+				}
+				if duty > 0.99 {
+					duty = 1.0
+				}
+				s.currentDuty.Store(uint64(duty * 1000000)) // Store with high precision
+				log.Printf("Software PWM duty set to %.2f", duty)
+
+			case <-ticker.C:
+				duty := float64(s.currentDuty.Load()) / 1000000
+
+				if duty <= 0 {
+					s.pin.Out(gpio.Low)
+					continue
+				}
+				if duty >= 1.0 {
+					s.pin.Out(gpio.High)
+					continue
+				}
+
+				// Perform PWM cycle
+				onDuration := time.Duration(float64(s.period) * duty)
 				s.pin.Out(gpio.High)
-				continue
+				time.Sleep(onDuration)
+				s.pin.Out(gpio.Low)
+
+			case <-s.stopChan:
+				log.Println("Stopping software PWM...")
+				s.pin.Out(gpio.Low) // Ensure fan is off on stop
+				return
 			}
-			// Perform PWM cycle
-			onDuration := time.Duration(float64(s.period) * currentDuty)
-			s.pin.Out(gpio.High)
-			time.Sleep(onDuration)
-			s.pin.Out(gpio.Low)
-		case <-s.stopChan:
-			log.Println("Stopping software PWM...")
-			s.pin.Out(gpio.Low) // Ensure fan is off on stop
-			return
 		}
 	}
 }
 
 func (s *softwarePWMFan) SetDutyCycle(duty float64) error {
-	s.dutyChan <- duty
+	// Compare with current duty to avoid unnecessary updates
+	currentDuty := float64(s.currentDuty.Load()) / 1000000
+	if abs(duty-currentDuty) < 0.01 {
+		return nil // No significant change, skip update
+	}
+
+	select {
+	case s.dutyChan <- duty:
+		// Successfully sent duty update
+	default:
+		// Channel buffer is full, replace the value
+		select {
+		case <-s.dutyChan: // Remove old value
+		default:
+			// Channel is now empty
+		}
+		s.dutyChan <- duty
+	}
 	return nil
 }
 
@@ -200,13 +313,34 @@ func (s *softwarePWMFan) Cleanup() error {
 	return s.pin.Out(gpio.Low) // Ensure pin is left low
 }
 
+// Helper function for floating point absolute value
+func abs(x float64) float64 {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
 // --- Fan Control Logic ---
 
+// TempCache holds temperature reading state to reduce system calls
+type TempCache struct {
+	Value     float64
+	Timestamp time.Time
+}
+
 var (
-	lastTempRead time.Time
-	lastTemp     float64
-	lastDuty     float64 = -1 // Start with invalid duty to force initial set
+	tempCacheData TempCache
+	lastDuty      float64 = -1 // Start with invalid duty to force initial set
 )
+
+// Initialize the temperature cache
+func init() {
+	tempCacheData = TempCache{
+		Value:     0,
+		Timestamp: time.Time{},
+	}
+}
 
 // getFanDutyCycle calculates the target duty cycle based on temperature and config.
 // Duty cycle values match the Python lv2dc mapping reversed:
@@ -216,58 +350,97 @@ var (
 // lv3 (e.g. 50C): 0.00 (Full speed)
 // Below lv0: 0.999 (interpreted as ~off by pwm control)
 func getFanDutyCycle(conf *config.Config) float64 {
-	// Use cached temperature if recent
-	if time.Since(lastTempRead) < fanTempCacheTime {
-		// Use cached temp
-	} else {
-		// Read current temperature (ignore errors for now, keep last temp)
-		// Assume GetCPUTemp returns temp in C
-		tempStr, err := sysinfo.GetCPUTemp(false) // Get temp in Celsius
-		if err == nil {
-			// Parse C temp: "CPU Temp: 45.1°C"
-			parts := strings.Fields(tempStr)
-			if len(parts) >= 3 {
-				tempValStr := strings.TrimSuffix(parts[2], "°C")
-				temp, parseErr := strconv.ParseFloat(tempValStr, 64)
-				if parseErr == nil {
-					lastTemp = temp
-					lastTempRead = time.Now()
-					log.Printf("Read CPU Temp: %.1f°C", lastTemp)
-				} else {
-					log.Printf("Warning: Could not parse CPU temp value '%s': %v", tempValStr, parseErr)
-				}
-			} else {
-				log.Printf("Warning: Could not parse CPU temp string '%s'", tempStr)
-			}
-		} else {
-			log.Printf("Warning: Failed to read CPU temp: %v", err)
-		}
-	}
+	// Read hard drive temperatures using sysinfo package
+	temp := getTemperatureForFanControl()
 
 	// Check if fan is manually disabled
 	if !conf.Run.Load() {
-		log.Println("Fan manually disabled, setting duty cycle to OFF (0.999)")
 		return 0.999 // Use 0.999 for off, as in Python version
 	}
 
-	t := lastTemp
 	var duty float64
-
 	switch {
-	case t >= conf.Fan.Lv3:
+	case temp >= conf.Fan.Lv3:
 		duty = 0.0 // Full speed
-	case t >= conf.Fan.Lv2:
+	case temp >= conf.Fan.Lv2:
 		duty = 0.25
-	case t >= conf.Fan.Lv1:
+	case temp >= conf.Fan.Lv1:
 		duty = 0.50
-	case t >= conf.Fan.Lv0:
+	case temp >= conf.Fan.Lv0:
 		duty = 0.75
 	default:
 		duty = 0.999 // Off
 	}
 
-	log.Printf("Temp %.1f°C -> Duty Cycle %.3f", t, duty)
+	// Only log when duty changes or periodically for debug
+	if abs(duty-lastDuty) >= 0.01 {
+		log.Printf("Temperature %.1f°C -> Duty Cycle %.3f", temp, duty)
+	}
+
 	return duty
+}
+
+// getTemperatureForFanControl returns the temperature to use for fan control
+// It tries to use the highest disk temperature, with CPU temperature as fallback
+func getTemperatureForFanControl() float64 {
+	// Use cached temperature if recent
+	if time.Since(tempCacheData.Timestamp) < fanTempCacheTime {
+		return tempCacheData.Value
+	}
+
+	// Try to get disk temperatures
+	diskTemp, err := sysinfo.GetHighestDiskTemperature()
+	if err == nil && diskTemp > 0 {
+		log.Printf("Using highest disk temperature: %.1f°C for fan control", diskTemp)
+		tempCacheData.Value = diskTemp
+		tempCacheData.Timestamp = time.Now()
+		return diskTemp
+	}
+
+	// Fallback to CPU temperature if disk temperature isn't available
+	log.Printf("Could not get disk temperature (%v), falling back to CPU temperature", err)
+	cpuTemp := readCPUTemperature()
+	log.Printf("Using CPU temperature: %.1f°C for fan control", cpuTemp)
+	return cpuTemp
+}
+
+// readCPUTemperature reads the CPU temperature
+// This is used as a fallback when disk temperatures are not available
+func readCPUTemperature() float64 {
+	// Read current temperature
+	tempStr, err := sysinfo.GetCPUTemp(false) // Get temp in Celsius
+	if err != nil {
+		log.Printf("Warning: Failed to read CPU temp: %v", err)
+		if tempCacheData.Value > 0 {
+			return tempCacheData.Value // Return last known value
+		}
+		return 40.0 // Reasonable default
+	}
+
+	// Parse C temp: "CPU Temp: 45.1°C"
+	parts := strings.Fields(tempStr)
+	if len(parts) < 3 {
+		log.Printf("Warning: Could not parse CPU temp string '%s'", tempStr)
+		if tempCacheData.Value > 0 {
+			return tempCacheData.Value
+		}
+		return 40.0 // Reasonable default
+	}
+
+	tempValStr := strings.TrimSuffix(parts[2], "°C")
+	temp, err := strconv.ParseFloat(tempValStr, 64)
+	if err != nil {
+		log.Printf("Warning: Could not parse CPU temp value '%s': %v", tempValStr, err)
+		if tempCacheData.Value > 0 {
+			return tempCacheData.Value
+		}
+		return 40.0 // Reasonable default
+	}
+
+	// Update cache
+	tempCacheData.Value = temp
+	tempCacheData.Timestamp = time.Now()
+	return temp
 }
 
 // controlFanLoop runs the main fan control logic.
@@ -280,12 +453,18 @@ func controlFanLoop(conf *config.Config, fan FanController, stopChan chan struct
 		select {
 		case <-ticker.C:
 			targetDuty := getFanDutyCycle(conf)
-			// Only update fan if duty cycle has changed
-			if targetDuty != lastDuty {
+			// Only update fan if duty cycle has changed significantly
+			if abs(targetDuty-lastDuty) >= 0.01 {
 				if err := fan.SetDutyCycle(targetDuty); err != nil {
 					log.Printf("Error setting fan duty cycle to %.3f: %v", targetDuty, err)
 				} else {
-					log.Printf("Fan duty cycle set to %.3f", targetDuty)
+					if targetDuty <= 0.01 {
+						log.Printf("Fan set to full speed (duty cycle %.3f)", targetDuty)
+					} else if targetDuty >= 0.99 {
+						log.Printf("Fan turned off (duty cycle %.3f)", targetDuty)
+					} else {
+						log.Printf("Fan duty cycle set to %.3f", targetDuty)
+					}
 					lastDuty = targetDuty
 				}
 			}

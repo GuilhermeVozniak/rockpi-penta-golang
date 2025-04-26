@@ -2,9 +2,13 @@ package sysinfo
 
 import (
 	"fmt"
+	"log"
 	"os/exec"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -224,6 +228,225 @@ func FormatDiskInfoForOLED() ([]string, error) {
 	}
 	if line3 != "" {
 		lines = append(lines, strings.TrimSpace(line3))
+	}
+
+	return lines, nil
+}
+
+// --- Disk Temperature Monitoring ---
+
+// DiskTemp holds temperature information for a disk
+type DiskTemp struct {
+	Device      string  // Device name (e.g., sda)
+	Temperature float64 // Temperature in Celsius
+	LastUpdated time.Time
+}
+
+var (
+	diskTempCache     map[string]DiskTemp // Cache of disk temperatures
+	diskTempCacheMu   sync.RWMutex        // Mutex to protect diskTempCache
+	diskTempCacheTime = 60 * time.Second  // Cache disk temp for 60 seconds
+	lastDiskScanTime  time.Time           // Time of last disk scan
+	diskScanInterval  = 300 * time.Second // Scan for new disks every 5 minutes
+	knownDisks        []string            // List of known disk devices
+	diskMutex         sync.Mutex          // Mutex for disk operations
+)
+
+func init() {
+	diskTempCache = make(map[string]DiskTemp)
+	knownDisks = []string{}
+}
+
+// DetectDisks returns a list of disk device names (e.g., sda, sdb)
+func DetectDisks() ([]string, error) {
+	diskMutex.Lock()
+	defer diskMutex.Unlock()
+
+	// Rescan for disks periodically
+	if time.Since(lastDiskScanTime) < diskScanInterval && len(knownDisks) > 0 {
+		return knownDisks, nil
+	}
+
+	cmd := exec.Command("lsblk", "-ndo", "NAME,TYPE")
+	output, err := cmd.Output()
+	if err != nil {
+		return knownDisks, fmt.Errorf("error running lsblk: %w", err)
+	}
+
+	var disks []string
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[1] == "disk" && strings.HasPrefix(fields[0], "sd") {
+			disks = append(disks, fields[0])
+		}
+	}
+
+	knownDisks = disks
+	lastDiskScanTime = time.Now()
+
+	fmt.Printf("Detected %d storage disks: %v\n", len(disks), disks)
+	return disks, nil
+}
+
+// GetDiskTemperature reads the temperature of a disk using smartctl
+func GetDiskTemperature(disk string) (float64, error) {
+	diskTempCacheMu.RLock()
+	cachedTemp, exists := diskTempCache[disk]
+	diskTempCacheMu.RUnlock()
+
+	// Return cached value if recent enough
+	if exists && time.Since(cachedTemp.LastUpdated) < diskTempCacheTime {
+		return cachedTemp.Temperature, nil
+	}
+
+	// Check if smartctl is available
+	if _, err := exec.LookPath("smartctl"); err != nil {
+		return 0, fmt.Errorf("smartctl not found: %w", err)
+	}
+
+	devicePath := "/dev/" + disk
+	cmd := exec.Command("smartctl", "-A", devicePath)
+	output, err := cmd.Output()
+	if err != nil {
+		// Try with sudo if permission denied
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			sudoCmd := exec.Command("sudo", "smartctl", "-A", devicePath)
+			output, err = sudoCmd.Output()
+			if err != nil {
+				return 0, fmt.Errorf("error running sudo smartctl on %s: %w", devicePath, err)
+			}
+		} else {
+			return 0, fmt.Errorf("error running smartctl on %s: %w", devicePath, err)
+		}
+	}
+
+	// Parse output to find temperature attribute
+	// Temperature is usually attribute 194 (Temperature_Celsius) or 190 (Airflow_Temperature_Cel)
+	tempRegex := regexp.MustCompile(`(?i)(Temperature_Celsius|Airflow_Temperature_Cel|Temperature).*?(\d+)(?:\s|$)`)
+	matches := tempRegex.FindStringSubmatch(string(output))
+	if len(matches) >= 3 {
+		temp, err := strconv.ParseFloat(matches[2], 64)
+		if err != nil {
+			return 0, fmt.Errorf("error parsing temperature value '%s': %w", matches[2], err)
+		}
+
+		// Update cache
+		diskTempCacheMu.Lock()
+		diskTempCache[disk] = DiskTemp{
+			Device:      disk,
+			Temperature: temp,
+			LastUpdated: time.Now(),
+		}
+		diskTempCacheMu.Unlock()
+
+		return temp, nil
+	}
+
+	// If we can't find temperature in standard attributes, look for the raw value
+	rawTempRegex := regexp.MustCompile(`(?i)(194|190)\s+.*?(\d+)(?:\s|$)`)
+	matches = rawTempRegex.FindStringSubmatch(string(output))
+	if len(matches) >= 3 {
+		temp, err := strconv.ParseFloat(matches[2], 64)
+		if err != nil {
+			return 0, fmt.Errorf("error parsing temperature value '%s': %w", matches[2], err)
+		}
+
+		// Update cache
+		diskTempCacheMu.Lock()
+		diskTempCache[disk] = DiskTemp{
+			Device:      disk,
+			Temperature: temp,
+			LastUpdated: time.Now(),
+		}
+		diskTempCacheMu.Unlock()
+
+		return temp, nil
+	}
+
+	return 0, fmt.Errorf("temperature attribute not found in smartctl output for %s", devicePath)
+}
+
+// GetAllDiskTemperatures returns a map of disk names to temperatures
+func GetAllDiskTemperatures() (map[string]float64, error) {
+	disks, err := DetectDisks()
+	if err != nil {
+		return nil, fmt.Errorf("error detecting disks: %w", err)
+	}
+
+	temps := make(map[string]float64)
+	for _, disk := range disks {
+		temp, err := GetDiskTemperature(disk)
+		if err != nil {
+			log.Printf("Warning: Could not get temperature for disk %s: %v", disk, err)
+			continue
+		}
+		temps[disk] = temp
+	}
+
+	return temps, nil
+}
+
+// GetHighestDiskTemperature returns the highest temperature among all disks
+func GetHighestDiskTemperature() (float64, error) {
+	temps, err := GetAllDiskTemperatures()
+	if err != nil {
+		return 0, err
+	}
+
+	if len(temps) == 0 {
+		return 0, fmt.Errorf("no disk temperatures available")
+	}
+
+	var highest float64
+	for _, temp := range temps {
+		if temp > highest {
+			highest = temp
+		}
+	}
+
+	return highest, nil
+}
+
+// FormatDiskTemperaturesForOLED prepares disk temperature strings for the OLED display
+func FormatDiskTemperaturesForOLED() ([]string, error) {
+	temps, err := GetAllDiskTemperatures()
+	if err != nil {
+		return []string{"Error getting disk temps"}, err
+	}
+
+	if len(temps) == 0 {
+		return []string{"No disk temps available"}, nil
+	}
+
+	// Format as "sdX: YY°C"
+	lines := []string{"Disk Temperatures:"}
+	currentLine := ""
+	count := 0
+
+	// Sort disk names for consistent display
+	var diskNames []string
+	for disk := range temps {
+		diskNames = append(diskNames, disk)
+	}
+	sort.Strings(diskNames)
+
+	for _, disk := range diskNames {
+		temp := temps[disk]
+		entry := fmt.Sprintf("%s:%.0f°C", disk, temp)
+
+		if count%2 == 0 {
+			currentLine = entry
+		} else {
+			currentLine += " " + entry
+			lines = append(lines, currentLine)
+			currentLine = ""
+		}
+		count++
+	}
+
+	// Add last line if odd number of disks
+	if currentLine != "" {
+		lines = append(lines, currentLine)
 	}
 
 	return lines, nil
