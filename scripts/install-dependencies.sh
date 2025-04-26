@@ -14,7 +14,7 @@ GO_VERSION="1.24.2"  # Full version for downloading
 GO_MOD_VERSION="1.24"  # Version format for go.mod
 INSTALL_GO=false
 
-if ! command -v go &> /dev/null; then
+if ! command -v go version &> /dev/null; then
     echo "Go not found, will install version $GO_VERSION..."
     INSTALL_GO=true
 else
@@ -80,21 +80,64 @@ if [ "$INSTALL_GO" = true ]; then
     
     echo "Go $GO_VERSION installed successfully."
     echo "Note: In go.mod, the version is specified as $GO_MOD_VERSION (without patch version)."
+else
+    echo "Skipping Go installation as it's already installed with a compatible version."
 fi
 
-# Install required system packages
-echo "Installing required system packages..."
-apt-get update
-apt-get install -y i2c-tools curl
+# Check and install required system packages
+echo "Checking required system packages..."
+PACKAGES_TO_INSTALL=""
 
-# Enable I2C if not already enabled
+# Check for i2c-tools
+if ! dpkg -l | grep -q i2c-tools; then
+    PACKAGES_TO_INSTALL="$PACKAGES_TO_INSTALL i2c-tools"
+fi
+
+# Check for curl
+if ! command -v curl &> /dev/null; then
+    PACKAGES_TO_INSTALL="$PACKAGES_TO_INSTALL curl"
+fi
+
+# Install any missing packages
+if [ -n "$PACKAGES_TO_INSTALL" ]; then
+    echo "Installing missing packages:$PACKAGES_TO_INSTALL"
+    apt-get update
+    apt-get install -y $PACKAGES_TO_INSTALL
+else
+    echo "All required system packages are already installed."
+fi
+
+# Enable I2C programmatically instead of requiring raspi-config
+echo "Enabling I2C interface..."
+I2C_ENABLED=false
+
+# Check if already enabled in /etc/modules
 if ! grep -q "^i2c-dev" /etc/modules; then
-    echo "Enabling I2C..."
+    echo "Adding i2c-dev to /etc/modules..."
     echo "i2c-dev" >> /etc/modules
+    I2C_ENABLED=true
+else
+    echo "i2c-dev already in /etc/modules."
+fi
+
+# Enable I2C in config.txt if it exists (Raspberry Pi specific)
+if [ -f "/boot/config.txt" ]; then
     if ! grep -q "^dtparam=i2c_arm=on" /boot/config.txt; then
+        echo "Enabling I2C in /boot/config.txt..."
         echo "dtparam=i2c_arm=on" >> /boot/config.txt
+        I2C_ENABLED=true
+    else
+        echo "I2C already enabled in /boot/config.txt."
     fi
-    echo "I2C has been enabled. A reboot will be required."
+fi
+
+# Load module immediately without requiring reboot
+if [ "$I2C_ENABLED" = true ]; then
+    echo "Loading I2C kernel module..."
+    modprobe i2c-dev
+    echo "I2C interface has been enabled."
+else
+    echo "I2C interface was already enabled."
 fi
 
 # Create config directory if it doesn't exist
@@ -179,5 +222,4 @@ echo "Next steps:"
 echo "1. Run './scripts/build.sh' to build the application"
 echo "2. After building, run 'sudo systemctl daemon-reload'"
 echo "3. Enable the service with 'sudo systemctl enable rockpi-penta'"
-echo "4. Start the service with 'sudo systemctl start rockpi-penta'"
-echo "Note: A reboot may be required for I2C changes to take effect." 
+echo "4. Start the service with 'sudo systemctl start rockpi-penta'" 

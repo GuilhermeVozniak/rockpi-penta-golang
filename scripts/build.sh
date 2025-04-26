@@ -6,6 +6,18 @@ echo "Building RockPi Penta Go service..."
 # Create the scripts directory if it doesn't exist
 mkdir -p "$(dirname "$0")"
 
+# First, check if dependencies are installed
+if [ "$(id -u)" -eq 0 ]; then
+    echo "Checking dependencies..."
+    ./scripts/install-dependencies.sh
+else
+    # Check if Go is installed without running the full dependency script
+    if ! command -v go &> /dev/null && [ ! -x /usr/local/go/bin/go ]; then
+        echo "Error: Go is not installed. Please run 'sudo ./scripts/install-dependencies.sh' first."
+        exit 1
+    fi
+fi
+
 # Check for Go in common installation paths
 if command -v go &> /dev/null; then
     echo "Found Go in PATH"

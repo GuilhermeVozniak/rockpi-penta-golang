@@ -43,38 +43,55 @@ else
     echo "Go installation not found in /usr/local/go."
 fi
 
-# Ask about removing packages
-read -p "Remove installed system packages (i2c-tools, curl)? (y/n): " -n 1 -r
+# Ask about removing i2c-tools but keep curl
+read -p "Remove i2c-tools package? (y/n): " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    echo "Removing packages..."
-    apt-get remove -y i2c-tools curl 2>/dev/null || true
-    echo "Packages removed."
+    echo "Removing i2c-tools package..."
+    apt-get remove -y i2c-tools 2>/dev/null || true
+    echo "i2c-tools package removed."
 else
-    echo "Keeping system packages."
+    echo "Keeping i2c-tools package."
 fi
 
 # Ask about disabling I2C
-read -p "Disable I2C modules (requires reboot)? (y/n): " -n 1 -r
+read -p "Disable I2C interface? (y/n): " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    echo "Disabling I2C modules..."
+    echo "Disabling I2C interface..."
+    I2C_DISABLED=false
     
     # Remove from /etc/modules
     if grep -q "^i2c-dev" /etc/modules; then
+        echo "Removing i2c-dev from /etc/modules..."
         sed -i '/^i2c-dev/d' /etc/modules
-        echo "Removed i2c-dev from /etc/modules."
+        I2C_DISABLED=true
+    else
+        echo "i2c-dev not found in /etc/modules."
     fi
     
-    # Remove from /boot/config.txt
+    # Remove from /boot/config.txt if it exists
     if [ -f "/boot/config.txt" ] && grep -q "^dtparam=i2c_arm=on" /boot/config.txt; then
+        echo "Disabling I2C in /boot/config.txt..."
         sed -i '/^dtparam=i2c_arm=on/d' /boot/config.txt
-        echo "Removed I2C configuration from /boot/config.txt."
+        I2C_DISABLED=true
+    else
+        echo "I2C configuration not found in /boot/config.txt or file doesn't exist."
     fi
     
-    echo "I2C modules disabled. A reboot is required for changes to take effect."
+    # Unload the module immediately
+    if lsmod | grep -q "i2c_dev"; then
+        echo "Unloading I2C kernel module..."
+        rmmod i2c_dev 2>/dev/null || true
+    fi
+    
+    if [ "$I2C_DISABLED" = true ]; then
+        echo "I2C interface has been disabled."
+    else
+        echo "No I2C configuration was found to disable."
+    fi
 else
-    echo "Keeping I2C modules enabled."
+    echo "Keeping I2C interface enabled."
 fi
 
 # Ask about running apt autoremove to clean up unused dependencies

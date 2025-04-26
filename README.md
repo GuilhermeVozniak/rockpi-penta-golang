@@ -17,7 +17,7 @@ Repository: [https://github.com/GuilhermeVozniak/rockpi-penta-golang](https://gi
 - Raspberry Pi with RockPi Penta SATA HAT
 - Raspberry Pi OS (or similar Linux distribution)
 - Root/sudo access
-
+- sudo raspi-config
 ## Quick Installation
 
 We've simplified the installation process with two scripts that handle everything for you:
