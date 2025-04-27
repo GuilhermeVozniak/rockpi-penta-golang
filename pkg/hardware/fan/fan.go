@@ -197,12 +197,11 @@ func (s *softwarePWMFan) runPWM() {
 				log.Printf("Software PWM duty set to %.2f", duty)
 
 				// Special cases optimization
-				if duty <= 0 || duty >= 1.0 {
-					if duty <= 0 {
-						pinState = gpio.Low
-					} else {
-						pinState = gpio.High
-					}
+				if duty <= 0 {
+					pinState = gpio.Low
+					s.pin.Out(pinState) // Set pin state directly for special cases
+				} else if duty >= 1.0 {
+					pinState = gpio.High
 					s.pin.Out(pinState) // Set pin state directly for special cases
 				}
 
@@ -343,14 +342,17 @@ func init() {
 }
 
 // getFanDutyCycle calculates the target duty cycle based on temperature and config.
-// Duty cycle values match the Python lv2dc mapping reversed:
-// lv0 (e.g. 35C): 0.75
-// lv1 (e.g. 40C): 0.50
-// lv2 (e.g. 45C): 0.25
-// lv3 (e.g. 50C): 0.00 (Full speed)
-// Below lv0: 0.999 (interpreted as ~off by pwm control)
+// In the Python implementation, the duty cycle is:
+// lv0 (e.g. 35C): 0.75  (25% fan speed)
+// lv1 (e.g. 40C): 0.50  (50% fan speed)
+// lv2 (e.g. 45C): 0.25  (75% fan speed)
+// lv3 (e.g. 50C): 0.00  (100% fan speed / Full speed)
+// Below lv0: 0.999 (nearly off)
+//
+// The duty cycle is reverse of what you might expect - 0 means fan at full speed,
+// and 1 (or 0.999) means fan off, which matches the Python implementation.
 func getFanDutyCycle(conf *config.Config) float64 {
-	// Read hard drive temperatures using sysinfo package
+	// Read temperature using sysinfo package
 	temp := getTemperatureForFanControl()
 
 	// Check if fan is manually disabled
@@ -361,20 +363,21 @@ func getFanDutyCycle(conf *config.Config) float64 {
 	var duty float64
 	switch {
 	case temp >= conf.Fan.Lv3:
-		duty = 0.0 // Full speed
+		duty = 0.0 // Full speed (100%)
 	case temp >= conf.Fan.Lv2:
-		duty = 0.25
+		duty = 0.25 // 75% fan speed
 	case temp >= conf.Fan.Lv1:
-		duty = 0.50
+		duty = 0.50 // 50% fan speed
 	case temp >= conf.Fan.Lv0:
-		duty = 0.75
+		duty = 0.75 // 25% fan speed
 	default:
 		duty = 0.999 // Off
 	}
 
 	// Only log when duty changes or periodically for debug
 	if abs(duty-lastDuty) >= 0.01 {
-		log.Printf("Temperature %.1f°C -> Duty Cycle %.3f", temp, duty)
+		log.Printf("Temperature %.1f°C -> Duty Cycle %.3f (%.0f%% fan speed)",
+			temp, duty, (1.0-duty)*100)
 	}
 
 	return duty
@@ -459,11 +462,12 @@ func controlFanLoop(conf *config.Config, fan FanController, stopChan chan struct
 					log.Printf("Error setting fan duty cycle to %.3f: %v", targetDuty, err)
 				} else {
 					if targetDuty <= 0.01 {
-						log.Printf("Fan set to full speed (duty cycle %.3f)", targetDuty)
+						log.Printf("Fan set to full speed (duty cycle %.3f, 100%% fan power)", targetDuty)
 					} else if targetDuty >= 0.99 {
-						log.Printf("Fan turned off (duty cycle %.3f)", targetDuty)
+						log.Printf("Fan turned off (duty cycle %.3f, 0%% fan power)", targetDuty)
 					} else {
-						log.Printf("Fan duty cycle set to %.3f", targetDuty)
+						fanPower := int((1.0 - targetDuty) * 100)
+						log.Printf("Fan duty cycle set to %.3f (%d%% fan power)", targetDuty, fanPower)
 					}
 					lastDuty = targetDuty
 				}
