@@ -1,0 +1,19 @@
+[Unit]
+Description=ROCK Pi Penta SATA HAT Controller (Go)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/rocki-penta
+KillSignal=SIGINT
+EnvironmentFile=-/etc/rocki-penta.env
+Restart=on-failure
+RestartSec=5
+User=root
+Group=root
+WorkingDirectory=/usr/local/bin
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target 
