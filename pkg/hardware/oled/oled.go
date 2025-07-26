@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"image"
 	"log"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/fogleman/gg"
 	"github.com/golang/freetype/truetype"
 	"golang.org/x/image/font"
+	"periph.io/x/conn/v3/i2c"
 	"periph.io/x/conn/v3/i2c/i2creg"
 	"periph.io/x/devices/v3/ssd1306"
 	"periph.io/x/host/v3"
@@ -74,8 +76,30 @@ func (c *Controller) Initialize() error {
 		return fmt.Errorf("failed to initialize periph.io: %v", err)
 	}
 
-	// Open I2C bus
-	bus, err := i2creg.Open("")
+	// Open I2C bus - try specific bus numbers for different hardware
+	var bus i2c.BusCloser
+	var err error
+
+	// Try to use I2C_BUS environment variable first
+	if busPath := os.Getenv("I2C_BUS"); busPath != "" {
+		log.Printf("Using I2C bus from environment: %s", busPath)
+		bus, err = i2creg.Open(busPath)
+	} else {
+		// Try common I2C buses for OLED displays
+		busPaths := []string{"/dev/i2c-13", "/dev/i2c-14", "/dev/i2c-1", "/dev/i2c-0"}
+		for _, busPath := range busPaths {
+			if _, fileErr := os.Stat(busPath); fileErr == nil {
+				log.Printf("Trying I2C bus: %s", busPath)
+				bus, err = i2creg.Open(busPath)
+				if err == nil {
+					log.Printf("Successfully opened I2C bus: %s", busPath)
+					break
+				}
+				log.Printf("Failed to open %s: %v", busPath, err)
+			}
+		}
+	}
+
 	if err != nil {
 		return fmt.Errorf("failed to open I2C bus: %v", err)
 	}
