@@ -1,0 +1,96 @@
+{
+  "name": "RockPi Penta Golang Setup",
+  "environment": "Raspberry Pi/Rock Pi with SATA HAT",
+  "description": "Complete setup for RockPi Penta Golang service with all dependencies",
+  "tasks": [
+    {
+      "name": "Update System Packages",
+      "description": "Update package lists",
+      "type": "command",
+      "commands": [
+        "apt-get update"
+      ],
+      "elevated": true,
+      "optional": false
+    },
+    {
+      "name": "Install System Dependencies",
+      "description": "Install required system packages for I2C and development",
+      "type": "command",
+      "condition": "! dpkg -l | grep -q i2c-tools",
+      "depends_on": ["Update System Packages"],
+      "commands": [
+        "apt-get install -y i2c-tools libi2c-dev build-essential git curl wget"
+      ],
+      "elevated": true,
+      "optional": false
+    },
+    {
+      "name": "Install Go 1.21",
+      "description": "Install Go programming language version 1.21",
+      "type": "script",
+      "condition": "! command -v go >/dev/null 2>&1 || [ \"$(go version | awk '{print $3}' | sed 's/go//' | cut -d. -f1-2 2>/dev/null || echo '0.0')\" != \"1.21\" ]",
+      "depends_on": ["Install System Dependencies"],
+      "script": "#!/bin/bash\nset -e\n\necho \"Installing Go 1.21...\"\n\n# Remove old Go installation\nrm -rf /usr/local/go\n\n# Detect architecture\nARCH=$(uname -m)\ncase $ARCH in\n    \"x86_64\") GOARCH=\"amd64\" ;;\n    \"aarch64\"|\"arm64\") GOARCH=\"arm64\" ;;\n    \"armv7l\"|\"armv6l\") GOARCH=\"armv6l\" ;;\n    *) echo \"Unsupported architecture: $ARCH\"; exit 1 ;;\nesac\n\n# Download and install Go\nGO_VERSION=\"1.21.8\"\nwget -q https://golang.org/dl/go${GO_VERSION}.linux-${GOARCH}.tar.gz\ntar -C /usr/local -xzf go${GO_VERSION}.linux-${GOARCH}.tar.gz\nrm go${GO_VERSION}.linux-${GOARCH}.tar.gz\n\n# Add Go to PATH for all users\necho 'export PATH=$PATH:/usr/local/go/bin' > /etc/profile.d/golang.sh\necho 'export GOPATH=$HOME/go' >> /etc/profile.d/golang.sh\necho 'export PATH=$PATH:$GOPATH/bin' >> /etc/profile.d/golang.sh\nchmod +x /etc/profile.d/golang.sh\n\n# Source for current session\nsource /etc/profile.d/golang.sh\n\necho \"Go installed successfully!\"",
+      "elevated": true,
+      "optional": false
+    },
+    {
+      "name": "Enable I2C Interface",
+      "description": "Enable I2C interface for OLED display communication",
+      "type": "script",
+      "condition": "! lsmod | grep -q i2c_dev",
+      "depends_on": ["Install System Dependencies"],
+      "script": "#!/bin/bash\nset -e\n\necho \"Enabling I2C interface...\"\n\n# Enable I2C module\nmodprobe i2c-dev\n\n# Add to boot modules\necho 'i2c-dev' >> /etc/modules\n\n# Configure I2C in boot config (for Raspberry Pi)\nif [ -f /boot/config.txt ]; then\n    if ! grep -q \"dtparam=i2c_arm=on\" /boot/config.txt; then\n        echo \"dtparam=i2c_arm=on\" >> /boot/config.txt\n    fi\nfi\n\n# Alternative boot config location\nif [ -f /boot/firmware/config.txt ]; then\n    if ! grep -q \"dtparam=i2c_arm=on\" /boot/firmware/config.txt; then\n        echo \"dtparam=i2c_arm=on\" >> /boot/firmware/config.txt\n    fi\nfi\n\n# Add user to i2c group\nusermod -a -G i2c $SUDO_USER 2>/dev/null || true\n\necho \"I2C interface enabled\"",
+      "elevated": true,
+      "optional": false
+    },
+    {
+      "name": "Create RockPi Penta Configuration",
+      "description": "Create default configuration file",
+      "type": "file",
+      "condition": "[ ! -f /etc/rockpi-penta.conf ]",
+      "depends_on": ["Enable I2C Interface"],
+      "target": "/etc/rockpi-penta.conf",
+      "content": "[fan]\n# When the temperature is above lv0 (35'C), the fan at 25% power,\n# and lv1 at 50% power, lv2 at 75% power, lv3 at 100% power.\n# When the temperature is below lv0, the fan is turned off.\nlv0 = 35\nlv1 = 40\nlv2 = 45\nlv3 = 50\n\n[key]\n# Available functions: slider, switch, reboot, poweroff, none\nclick = slider\ntwice = switch\npress = none\n\n[time]\n# Button timing configuration (seconds)\ntwice = 0.7\npress = 1.8\n\n[slider]\n# OLED auto-sliding configuration\nauto = true\ntime = 10\n\n[oled]\n# Display configuration\nrotate = false\nf-temp = false",
+      "mode": "644",
+      "elevated": true,
+      "optional": false
+    },
+    {
+      "name": "Create RockPi Penta Environment File",
+      "description": "Create hardware environment configuration",
+      "type": "file",
+      "condition": "[ ! -f /etc/rockpi-penta.env ]",
+      "depends_on": ["Create RockPi Penta Configuration"],
+      "target": "/etc/rockpi-penta.env",
+      "content": "SDA=SDA\nSCL=SCL\nOLED_RESET=D23\nBUTTON_CHIP=4\nBUTTON_LINE=17\nFAN_CHIP=4\nFAN_LINE=27\nHARDWARE_PWM=0",
+      "mode": "644",
+      "elevated": true,
+      "optional": false
+    },
+    {
+      "name": "Setup Systemd Service",
+      "description": "Install and configure systemd service",
+      "type": "file",
+      "condition": "[ ! -f /etc/systemd/system/rockpi-penta.service ]",
+      "depends_on": ["Create RockPi Penta Environment File"],
+      "target": "/etc/systemd/system/rockpi-penta.service",
+      "content": "[Unit]\nDescription=RockPi Penta SATA HAT Controller (Go)\nAfter=network.target\n\n[Service]\nType=simple\nUser=root\nExecStart=/usr/local/bin/rockpi-penta\nKillSignal=SIGINT\nEnvironmentFile=-/etc/rockpi-penta.env\nRestart=on-failure\nRestartSec=10\nStandardOutput=journal\nStandardError=journal\n\n[Install]\nWantedBy=multi-user.target",
+      "mode": "644",
+      "elevated": true,
+      "optional": false
+    },
+    {
+      "name": "Reload Systemd",
+      "description": "Reload systemd daemon to recognize new service",
+      "type": "command",
+      "depends_on": ["Setup Systemd Service"],
+      "commands": [
+        "systemctl daemon-reload"
+      ],
+      "elevated": true,
+      "optional": false
+    }
+  ]
+} 
