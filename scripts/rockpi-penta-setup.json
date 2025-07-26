@@ -51,7 +51,9 @@
       "type": "file",
       "condition": "[ ! -f /etc/rockpi-penta.conf ]",
       "depends_on": ["Enable I2C Interface"],
-      "target": "/etc/rockpi-penta.conf",
+      "commands": [
+        "/etc/rockpi-penta.conf"
+      ],
       "content": "[fan]\n# When the temperature is above lv0 (35'C), the fan at 25% power,\n# and lv1 at 50% power, lv2 at 75% power, lv3 at 100% power.\n# When the temperature is below lv0, the fan is turned off.\nlv0 = 35\nlv1 = 40\nlv2 = 45\nlv3 = 50\n\n[key]\n# Available functions: slider, switch, reboot, poweroff, none\nclick = slider\ntwice = switch\npress = none\n\n[time]\n# Button timing configuration (seconds)\ntwice = 0.7\npress = 1.8\n\n[slider]\n# OLED auto-sliding configuration\nauto = true\ntime = 10\n\n[oled]\n# Display configuration\nrotate = false\nf-temp = false",
       "mode": "644",
       "elevated": true,
@@ -63,7 +65,9 @@
       "type": "file",
       "condition": "[ ! -f /etc/rockpi-penta.env ]",
       "depends_on": ["Create RockPi Penta Configuration"],
-      "target": "/etc/rockpi-penta.env",
+      "commands": [
+        "/etc/rockpi-penta.env"
+      ],
       "content": "SDA=SDA\nSCL=SCL\nOLED_RESET=D23\nBUTTON_CHIP=4\nBUTTON_LINE=17\nFAN_CHIP=4\nFAN_LINE=27\nHARDWARE_PWM=0",
       "mode": "644",
       "elevated": true,
@@ -75,7 +79,9 @@
       "type": "file",
       "condition": "[ ! -f /etc/systemd/system/rockpi-penta.service ]",
       "depends_on": ["Create RockPi Penta Environment File"],
-      "target": "/etc/systemd/system/rockpi-penta.service",
+      "commands": [
+        "/etc/systemd/system/rockpi-penta.service"
+      ],
       "content": "[Unit]\nDescription=RockPi Penta SATA HAT Controller (Go)\nAfter=network.target\n\n[Service]\nType=simple\nUser=root\nExecStart=/usr/local/bin/rockpi-penta\nKillSignal=SIGINT\nEnvironmentFile=-/etc/rockpi-penta.env\nRestart=on-failure\nRestartSec=10\nStandardOutput=journal\nStandardError=journal\n\n[Install]\nWantedBy=multi-user.target",
       "mode": "644",
       "elevated": true,

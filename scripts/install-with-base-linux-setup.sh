@@ -88,7 +88,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
 fi
 
 # Execute base-linux-setup
-if "$BINARY_PATH" --config "$CONFIG_FILE" --yes; then
+if "$BINARY_PATH" --config "$CONFIG_FILE"; then
     print_info "Dependencies installed successfully!"
 else
     print_error "Dependency installation failed"
