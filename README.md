@@ -122,13 +122,26 @@ HARDWARE_PWM=0  # 0=software PWM, 1=hardware PWM
 ## Hardware Compatibility
 
 ### Supported Boards
-- Raspberry Pi 4/5 with RockPi Penta SATA HAT
-- Rock Pi 4/5 with Penta SATA HAT
-- Other ARM boards with compatible GPIO layout
+
+The system automatically detects and configures the following boards:
+
+**Raspberry Pi Series:**
+- Raspberry Pi 5 (with automatic GPIO configuration)
+- Raspberry Pi 4 (with automatic GPIO configuration)  
+- Raspberry Pi 3 (with automatic GPIO configuration)
+
+**Rock Pi Series:**
+- Rock 5A (RK3588) - with hardware PWM support
+- Rock Pi 5 (RK3588) - with hardware PWM support
+- Rock Pi 4 (RK3399) - with hardware PWM support
+- Rock Pi 3 (RK3566) - with hardware PWM support
+- Rock 3C (RK3566) - with software PWM
+
+**Other ARM boards:** Generic fallback configurations available
 
 ### Pin Configurations
 
-Different boards use different GPIO configurations. Update `/etc/rockpi-penta.env`:
+The system automatically configures GPIO pins based on detected hardware. Manual override is available via `/etc/rockpi-penta.env`:
 
 **Raspberry Pi 5:**
 ```bash
@@ -137,15 +150,54 @@ BUTTON_LINE=17
 FAN_CHIP=4
 FAN_LINE=27
 HARDWARE_PWM=0
+I2C_BUS=/dev/i2c-1
+```
+
+**Raspberry Pi 4:**
+```bash
+BUTTON_CHIP=0
+BUTTON_LINE=17
+FAN_CHIP=0
+FAN_LINE=27
+HARDWARE_PWM=0
+I2C_BUS=/dev/i2c-1
+```
+
+**Rock 5A:**
+```bash
+BUTTON_CHIP=4
+BUTTON_LINE=11
+PWMCHIP=14
+HARDWARE_PWM=1
+I2C_BUS=/dev/i2c-8
 ```
 
 **Rock Pi 4:**
 ```bash
-BUTTON_CHIP=1
-BUTTON_LINE=20
-FAN_CHIP=1  
-FAN_LINE=21
+BUTTON_CHIP=4
+BUTTON_LINE=18
+PWMCHIP=1
 HARDWARE_PWM=1
+I2C_BUS=/dev/i2c-7
+```
+
+**Rock Pi 3:**
+```bash
+BUTTON_CHIP=3
+BUTTON_LINE=20
+PWMCHIP=15
+HARDWARE_PWM=1
+I2C_BUS=/dev/i2c-3
+```
+
+**Rock 3C:**
+```bash
+BUTTON_CHIP=3
+BUTTON_LINE=1
+FAN_CHIP=3
+FAN_LINE=2
+HARDWARE_PWM=0
+I2C_BUS=/dev/i2c-1
 ```
 
 ## Service Management
@@ -189,11 +241,109 @@ Configure button behavior in `/etc/rockpi-penta.conf`:
 - **poweroff**: Shutdown the system
 - **none**: No action
 
+## Device Detection & Verification
+
+The system includes automatic device detection to configure the correct GPIO pins and hardware settings for your board.
+
+### Automatic Detection
+
+The service will automatically detect your hardware platform and configure appropriate settings:
+
+- **Raspberry Pi 5**: Uses gpiochip4, software PWM, I2C bus 1
+- **Raspberry Pi 4**: Uses gpiochip0, software PWM, I2C bus 1  
+- **Raspberry Pi 3**: Uses gpiochip0, software PWM, I2C bus 1
+- **Rock 5A**: Uses gpiochip4, PWM chip 14, I2C bus 8
+- **Rock Pi 5**: Uses gpiochip4, hardware PWM, I2C bus varies
+- **Rock Pi 4**: Uses gpiochip4, PWM chip 1, I2C bus 7
+- **Rock Pi 3**: Uses gpiochip3, PWM chip 15, I2C bus 3
+- **Rock 3C**: Uses gpiochip3, software PWM, GPIO I2C
+- **Unknown boards**: Falls back to Raspberry Pi 5 defaults
+
+Auto-detection can be disabled by setting: `export DISABLE_AUTO_DETECT=1`
+
+### Device Information Utility
+
+Use the `rockpi-penta-device-info` command to verify your configuration:
+
+```bash
+# Show detected device and recommended configuration
+sudo rockpi-penta-device-info
+
+# Show only environment variables to set
+sudo rockpi-penta-device-info -env
+
+# Show export commands for shell
+sudo rockpi-penta-device-info -export
+
+# Verify current hardware access
+sudo rockpi-penta-device-info -verify
+
+# Verbose output with system details
+sudo rockpi-penta-device-info -v
+```
+
+### Manual Configuration Override
+
+If auto-detection doesn't work correctly, manually set environment variables in `/etc/rockpi-penta.env`:
+
+```bash
+# For Raspberry Pi 5
+export BUTTON_CHIP=4
+export BUTTON_LINE=17
+export FAN_CHIP=4
+export FAN_LINE=27
+export HARDWARE_PWM=0
+export I2C_BUS=/dev/i2c-1
+
+# For Raspberry Pi 4/3  
+export BUTTON_CHIP=0
+export BUTTON_LINE=17
+export FAN_CHIP=0
+export FAN_LINE=27
+export HARDWARE_PWM=0
+export I2C_BUS=/dev/i2c-1
+
+# For Rock 5A
+export BUTTON_CHIP=4
+export BUTTON_LINE=11
+export PWMCHIP=14
+export HARDWARE_PWM=1
+export I2C_BUS=/dev/i2c-8
+
+# For Rock Pi 4
+export BUTTON_CHIP=4
+export BUTTON_LINE=18
+export PWMCHIP=1
+export HARDWARE_PWM=1
+export I2C_BUS=/dev/i2c-7
+
+# For Rock Pi 3
+export BUTTON_CHIP=3
+export BUTTON_LINE=20
+export PWMCHIP=15
+export HARDWARE_PWM=1
+export I2C_BUS=/dev/i2c-3
+
+# For Rock 3C
+export BUTTON_CHIP=3
+export BUTTON_LINE=1
+export FAN_CHIP=3
+export FAN_LINE=2
+export HARDWARE_PWM=0
+export I2C_BUS=/dev/i2c-1
+```
+
 ## Troubleshooting
 
 ### Service Won't Start
 
-Check logs for specific errors:
+First, verify your hardware configuration:
+```bash
+# Check device detection and hardware access
+sudo rockpi-penta-device-info -verify
+```
+
+Then check service logs for specific errors:
 ```bash
 sudo journalctl -u rockpi-penta -n 50
 ```
@@ -202,6 +352,7 @@ Common issues:
 - I2C not enabled: `sudo modprobe i2c-dev`
 - Permissions: Service must run as root
 - Hardware not connected: OLED/button failures are non-fatal
+- Wrong GPIO pins: Use `rockpi-penta-device-info` to verify configuration
 
 ### I2C Issues
 

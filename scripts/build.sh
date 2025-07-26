@@ -10,6 +10,7 @@ NC='\033[0m' # No Color
 
 # Configuration
 BINARY_NAME="rockpi-penta"
+DEVICE_INFO_NAME="rockpi-penta-device-info"
 BUILD_DIR="build"
 INSTALL_PATH="/usr/local/bin"
 
@@ -46,14 +47,25 @@ print_info "Building RockPi Penta service..."
 # Create build directory
 mkdir -p "$BUILD_DIR"
 
-# Build the application
-print_info "Compiling Go application..."
+# Build the main application
+print_info "Compiling main application..."
 CGO_ENABLED=1 go build -o "$BUILD_DIR/$BINARY_NAME" -ldflags "-s -w" ./cmd/
 
+if [ $? -ne 0 ]; then
+    print_error "Main application build failed!"
+    exit 1
+fi
+
+# Build the device info utility
+print_info "Compiling device info utility..."
+CGO_ENABLED=1 go build -o "$BUILD_DIR/$DEVICE_INFO_NAME" -ldflags "-s -w" ./cmd/device-info/
+
 if [ $? -eq 0 ]; then
-    print_info "Build successful! Binary created at $BUILD_DIR/$BINARY_NAME"
+    print_info "Build successful! Binaries created:"
+    print_info "  - $BUILD_DIR/$BINARY_NAME"
+    print_info "  - $BUILD_DIR/$DEVICE_INFO_NAME"
 else
-    print_error "Build failed!"
+    print_error "Device info utility build failed!"
     exit 1
 fi
 
@@ -80,11 +92,15 @@ if [ "$INSTALL" = true ]; then
         RESTART_SERVICE=true
     fi
     
-    # Install binary
+    # Install binaries
     cp "$BUILD_DIR/$BINARY_NAME" "$INSTALL_PATH/"
+    cp "$BUILD_DIR/$DEVICE_INFO_NAME" "$INSTALL_PATH/"
     chmod +x "$INSTALL_PATH/$BINARY_NAME"
+    chmod +x "$INSTALL_PATH/$DEVICE_INFO_NAME"
     
-    print_info "Binary installed successfully at $INSTALL_PATH/$BINARY_NAME"
+    print_info "Binaries installed successfully:"
+    print_info "  - $INSTALL_PATH/$BINARY_NAME"
+    print_info "  - $INSTALL_PATH/$DEVICE_INFO_NAME"
     
     # Restart service if it was running
     if [ "$RESTART_SERVICE" = true ]; then

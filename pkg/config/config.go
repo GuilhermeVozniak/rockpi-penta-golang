@@ -20,10 +20,10 @@ type Config struct {
 	OLED   OLEDConfig   `ini:"oled"`
 
 	// Runtime state
-	RunState     *int32
-	SliderIndex  *int32
-	DiskDevices  []string
-	diskMutex    sync.RWMutex
+	RunState    *int32
+	SliderIndex *int32
+	DiskDevices []string
+	diskMutex   sync.RWMutex
 }
 
 type FanConfig struct {
@@ -56,14 +56,14 @@ type OLEDConfig struct {
 
 // Hardware environment configuration
 type HardwareConfig struct {
-	SDA          string
-	SCL          string
-	OLEDReset    string
-	ButtonChip   string
-	ButtonLine   string
-	FanChip      string
-	FanLine      string
-	HardwarePWM  bool
+	SDA         string
+	SCL         string
+	OLEDReset   string
+	ButtonChip  string
+	ButtonLine  string
+	FanChip     string
+	FanLine     string
+	HardwarePWM bool
 }
 
 var (
@@ -132,16 +132,64 @@ func loadFromFile(c *Config) error {
 }
 
 func loadHardwareConfig() *HardwareConfig {
-	hw := &HardwareConfig{
-		SDA:         getEnvDefault("SDA", "SDA"),
-		SCL:         getEnvDefault("SCL", "SCL"),
-		OLEDReset:   getEnvDefault("OLED_RESET", "D23"),
-		ButtonChip:  getEnvDefault("BUTTON_CHIP", "4"),
-		ButtonLine:  getEnvDefault("BUTTON_LINE", "17"),
-		FanChip:     getEnvDefault("FAN_CHIP", "4"),
-		FanLine:     getEnvDefault("FAN_LINE", "27"),
-		HardwarePWM: getEnvDefaultBool("HARDWARE_PWM", false),
+	// First try to detect device automatically
+	var defaults map[string]string
+
+	if shouldAutoDetect() {
+		log.Println("Auto-detecting hardware configuration...")
+		device := DetectDevice()
+		defaults = device.GetRecommendedEnvVars()
+
+		// Print detection summary
+		log.Printf("Detected board: %s (confidence: %d%%)", device.BoardType, device.Confidence)
+
+		// Verify hardware access
+		access := device.VerifyHardwareAccess()
+		allGood := true
+		for component, accessible := range access {
+			if !accessible {
+				log.Printf("Warning: %s not accessible", component)
+				allGood = false
+			}
+		}
+
+		if allGood && device.Confidence >= 80 {
+			log.Println("Hardware auto-detection successful")
+		} else {
+			log.Println("Hardware auto-detection completed with warnings")
+		}
+	} else {
+		// Use default values if auto-detection is disabled
+		defaults = map[string]string{
+			"SDA":          "SDA",
+			"SCL":          "SCL",
+			"OLED_RESET":   "D23",
+			"BUTTON_CHIP":  "4",
+			"BUTTON_LINE":  "17",
+			"FAN_CHIP":     "4",
+			"FAN_LINE":     "27",
+			"HARDWARE_PWM": "0",
+			"I2C_BUS":      "/dev/i2c-1",
+		}
 	}
+
+	hw := &HardwareConfig{
+		SDA:         getEnvDefaultWithFallback("SDA", defaults["SDA"]),
+		SCL:         getEnvDefaultWithFallback("SCL", defaults["SCL"]),
+		OLEDReset:   getEnvDefaultWithFallback("OLED_RESET", defaults["OLED_RESET"]),
+		ButtonChip:  getEnvDefaultWithFallback("BUTTON_CHIP", defaults["BUTTON_CHIP"]),
+		ButtonLine:  getEnvDefaultWithFallback("BUTTON_LINE", defaults["BUTTON_LINE"]),
+		FanChip:     getEnvDefaultWithFallback("FAN_CHIP", defaults["FAN_CHIP"]),
+		FanLine:     getEnvDefaultWithFallback("FAN_LINE", defaults["FAN_LINE"]),
+		HardwarePWM: getEnvDefaultBoolWithFallback("HARDWARE_PWM", defaults["HARDWARE_PWM"] == "1"),
+	}
+
+	// Set I2C_BUS environment variable if not set and we have a detected value
+	if os.Getenv("I2C_BUS") == "" && defaults["I2C_BUS"] != "" {
+		os.Setenv("I2C_BUS", defaults["I2C_BUS"])
+		log.Printf("Set I2C_BUS=%s based on device detection", defaults["I2C_BUS"])
+	}
+
 	return hw
 }
 
@@ -163,6 +211,45 @@ func getEnvDefaultBool(key string, defaultValue bool) bool {
 		}
 	}
 	return defaultValue
+}
+
+func getEnvDefaultWithFallback(key, fallbackValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallbackValue
+}
+
+func getEnvDefaultBoolWithFallback(key string, fallbackValue bool) bool {
+	if value := os.Getenv(key); value != "" {
+		if b, err := strconv.ParseBool(value); err == nil {
+			return b
+		}
+		// Try parsing as int (0/1)
+		if i, err := strconv.Atoi(value); err == nil {
+			return i != 0
+		}
+	}
+	return fallbackValue
+}
+
+func shouldAutoDetect() bool {
+	// Check if auto-detection is explicitly disabled
+	if disabled := os.Getenv("DISABLE_AUTO_DETECT"); disabled != "" {
+		if b, err := strconv.ParseBool(disabled); err == nil && b {
+			return false
+		}
+		if i, err := strconv.Atoi(disabled); err == nil && i != 0 {
+			return false
+		}
+	}
+
+	// Auto-detect by default, but not if we're in a container or CI environment
+	if os.Getenv("CONTAINER") != "" || os.Getenv("CI") != "" {
+		return false
+	}
+
+	return true
 }
 
 // IsRunning returns the current run state
@@ -260,4 +347,4 @@ func (c *Config) GetKeyAction(key string) string {
 func (c *Config) String() string {
 	return fmt.Sprintf("Config{Fan: %+v, Key: %+v, Time: %+v, Slider: %+v, OLED: %+v, Running: %v}",
 		c.Fan, c.Key, c.Time, c.Slider, c.OLED, c.IsRunning())
-} 
+}
