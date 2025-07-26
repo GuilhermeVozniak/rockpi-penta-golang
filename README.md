@@ -17,19 +17,54 @@ Repository: [https://github.com/GuilhermeVozniak/rockpi-penta-golang](https://gi
 - Raspberry Pi with RockPi Penta SATA HAT
 - Raspberry Pi OS (or similar Linux distribution)
 - Root/sudo access
-- sudo raspi-config
+- Internet connection for downloading dependencies
+
 ## Quick Installation
 
-We've simplified the installation process with two scripts that handle everything for you:
+We provide multiple installation methods. Choose the one that best fits your needs:
 
-### 1. Clone the repository
+### Method 1: Using base-linux-setup (Recommended)
+
+This method uses our enhanced [base-linux-setup](https://github.com/GuilhermeVozniak/base-linux-setup) tool that provides intelligent dependency management with conditional checks and proper dependency ordering.
+
+```bash
+# Clone the repository
+git clone https://github.com/GuilhermeVozniak/rockpi-penta-golang.git
+cd rockpi-penta-golang
+
+# Run the enhanced installation script
+chmod +x scripts/install-with-base-linux-setup.sh
+sudo ./scripts/install-with-base-linux-setup.sh
+```
+
+This script will:
+- Automatically download the appropriate base-linux-setup binary for your architecture
+- Use the RockPi Penta configuration with intelligent dependency resolution
+- Check if components are already installed before attempting installation
+- Install Go 1.24.2 only if needed (checks existing version)
+- Enable I2C interface only if not already enabled
+- Create configuration files only if they don't exist
+- Execute tasks in proper dependency order
+
+**Features of the enhanced installation:**
+- ✅ **Conditional Execution**: Only installs what's missing
+- ✅ **Dependency Management**: Ensures tasks run in the correct order
+- ✅ **Architecture Detection**: Downloads the right binary for your system
+- ✅ **Idempotent**: Safe to run multiple times
+- ✅ **Smart Checks**: Verifies existing installations before proceeding
+
+### Method 2: Traditional Installation
+
+If you prefer the traditional approach or want more control over the process:
+
+#### 1. Clone the repository
 
 ```bash
 git clone https://github.com/GuilhermeVozniak/rockpi-penta-golang.git
 cd rockpi-penta-golang
 ```
 
-### 2. Install dependencies and create config files
+#### 2. Install dependencies and create config files
 
 This script will:
 
@@ -43,7 +78,7 @@ This script will:
 sudo ./scripts/install-dependencies.sh
 ```
 
-### 3. Build and install the service
+#### 3. Build and install the service
 
 This script will:
 
@@ -58,9 +93,15 @@ This script will:
 sudo ./scripts/build.sh
 ```
 
-### 4. Start the service
+### Final Steps (Both Methods)
+
+After running either installation method:
 
 ```bash
+# Build the application
+./scripts/build.sh
+
+# Enable and start the service
 sudo systemctl daemon-reload
 sudo systemctl enable rockpi-penta
 sudo systemctl start rockpi-penta
@@ -68,41 +109,9 @@ sudo systemctl start rockpi-penta
 
 That's it! The service will now run automatically at boot.
 
-## Uninstallation
+## Configuration File
 
-To uninstall the RockPi Penta service and its components, use the provided uninstall script:
-
-```bash
-sudo ./scripts/uninstall.sh
-```
-
-The script will:
-
-- Stop and disable the service
-- Remove the systemd service file
-- Remove the binary from /usr/local/bin
-- Optionally remove the configuration file (with confirmation)
-- Optionally remove Go installation (with confirmation)
-- Optionally remove local build artifacts (with confirmation)
-
-To completely remove all dependencies installed by the setup process, you can also run:
-
-```bash
-sudo ./scripts/uninstall-dependencies.sh
-```
-
-This additional script will:
-
-- Remove Go from /usr/local/go (optional)
-- Remove system packages like i2c-tools and curl (optional)
-- Disable I2C modules in system configuration (optional)
-- Clean up unused dependencies with apt autoremove (optional)
-
-Each step in the dependency uninstallation process requires confirmation, allowing you to selectively remove only what you want.
-
-## Configuration
-
-The default configuration file is created at `/etc/rockpi-penta.conf`. You can edit this file to customize settings:
+The installation creates a configuration file at `/etc/rockpi-penta.conf` that you can customize:
 
 ```ini
 [fan]
@@ -134,70 +143,66 @@ rotate = false
 f-temp = false
 ```
 
-## Environment Variables
+## Verification
 
-The default environment variables are set in the systemd service file. If you need to change these, edit `/etc/systemd/system/rockpi-penta.service`:
-
-```bash
-# Fan control - choose GPIO or hardware PWM
-Environment="HARDWARE_PWM=0"
-Environment="FAN_CHIP=gpiochip0"
-Environment="FAN_LINE=18"
-
-# Button control
-Environment="BUTTON_CHIP=gpiochip0"
-Environment="BUTTON_LINE=17"
-
-# OLED display reset pin (optional)
-Environment="OLED_RESET=27"
-```
-
-After editing, reload and restart the service:
+You can verify the installation by checking:
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl restart rockpi-penta
+# Check Go installation
+go version
+
+# Check I2C module
+lsmod | grep i2c_dev
+
+# Check service status
+sudo systemctl status rockpi-penta
+
+# View service logs
+sudo journalctl -u rockpi-penta -f
 ```
 
-## GPIO Pin Configuration
+## Advanced Configuration
 
-The default configuration uses the following GPIO pins:
+### Custom base-linux-setup Configuration
 
-- Fan: GPIO 18 (Pin 12) for software PWM
-- Button: GPIO 17 (Pin 11) for user input
-- OLED Reset: GPIO 27 (Pin 13) for display reset
+If you want to modify the installation process, you can edit the `scripts/rockpi-penta-setup.json` file. This file contains:
 
-Adjust the environment variables to match your specific hardware setup.
+- **Conditional Tasks**: Each task can have a `condition` field with a shell command that determines if the task should run
+- **Dependencies**: Tasks can depend on other tasks using the `depends_on` field
+- **Task Types**: Support for commands, scripts, files, and services
 
-## Manual Installation
+Example task with condition and dependency:
+```json
+{
+  "name": "Install Go 1.24.2",
+  "type": "script",
+  "condition": "! command -v go >/dev/null 2>&1 || [ \"$(go version | awk '{print $3}' | sed 's/go//' | cut -d. -f1-2 2>/dev/null || echo '0.0')\" != \"1.24\" ]",
+  "depends_on": ["Update System Packages"],
+  "script": "# Go installation script here"
+}
+```
 
-If you prefer to set things up manually, follow these steps:
+### Using Your Own base-linux-setup Binary
 
-1. Install Go (version 1.24)
-2. Enable I2C interface via `raspi-config`
-3. Build the application: `go build -o rockpi-penta-service ./cmd/rockpi-penta-service`
-4. Create a configuration file at `/etc/rockpi-penta.conf` (use example above)
-5. Set up environment variables and run the service
+If you have your own build of base-linux-setup, you can use it directly:
 
-## Configuration Details
-
-### Fan Speed Control
-
-- Below `lv0`: Fan is off
-- Between `lv0` and `lv1`: Fan at 25% speed
-- Between `lv1` and `lv2`: Fan at 50% speed
-- Between `lv2` and `lv3`: Fan at 75% speed
-- Above `lv3`: Fan at 100% speed
-
-### Button Actions
-
-- `slider`: Switch to the next OLED page
-- `switch`: Toggle fan on/off
-- `reboot`: Reboot the system
-- `poweroff`: Power off the system
-- `none`: No action
+```bash
+# Using your own binary
+your-base-linux-setup --config scripts/rockpi-penta-setup.json
+```
 
 ## Troubleshooting
+
+### Installation Issues
+
+If the enhanced installation fails:
+
+1. **Check internet connection**: The script downloads the base-linux-setup binary
+2. **Verify architecture support**: Ensure your system architecture is supported
+3. **Check permissions**: Some tasks require sudo privileges
+4. **Review logs**: Check the output for specific error messages
+
+### Service Issues
 
 - **Check service status**: `sudo systemctl status rockpi-penta`
 - **View logs**: `sudo journalctl -u rockpi-penta`

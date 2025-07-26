@@ -1,0 +1,106 @@
+{
+  "name": "RockPi Penta Golang Setup",
+  "environment": "RockPi Penta HAT Environment",
+  "description": "Complete setup for RockPi Penta HAT with Go dependencies, I2C configuration, and system packages",
+  "tasks": [
+    {
+      "name": "Update System Packages",
+      "description": "Update package lists and upgrade system packages",
+      "type": "command",
+      "commands": [
+        "sudo apt-get update",
+        "sudo apt-get upgrade -y"
+      ],
+      "elevated": true,
+      "optional": false
+    },
+    {
+      "name": "Check Go Installation",
+      "description": "Check if Go 1.24+ is already installed",
+      "type": "command",
+      "commands": [
+        "go version"
+      ],
+      "elevated": false,
+      "optional": true,
+      "condition": "command -v go >/dev/null 2>&1 && [ \"$(go version | awk '{print $3}' | sed 's/go//' | cut -d. -f1-2)\" = \"1.24\" ]"
+    },
+    {
+      "name": "Install Go 1.24.2",
+      "description": "Download and install Go 1.24.2 for the detected architecture",
+      "type": "script",
+      "script": "#!/bin/bash\nset -e\n\nGO_VERSION=\"1.24.2\"\necho \"Installing Go $GO_VERSION...\"\n\n# Determine architecture\nARCH=$(uname -m)\nif [ \"$ARCH\" = \"x86_64\" ]; then\n    GO_ARCH=\"amd64\"\nelif [ \"$ARCH\" = \"aarch64\" ] || [ \"$ARCH\" = \"arm64\" ]; then\n    GO_ARCH=\"arm64\"\nelif [[ \"$ARCH\" == arm* ]]; then\n    GO_ARCH=\"armv6l\"\nelse\n    echo \"Unsupported architecture: $ARCH\"\n    exit 1\nfi\n\n# Setup temporary directory\nTMP_DIR=$(mktemp -d)\ncd \"$TMP_DIR\"\n\n# Download and install Go\nGO_PACKAGE=\"go${GO_VERSION}.linux-${GO_ARCH}.tar.gz\"\nGO_URL=\"https://go.dev/dl/${GO_PACKAGE}\"\n\necho \"Downloading Go from $GO_URL...\"\nif ! curl -LO \"$GO_URL\"; then\n    echo \"Failed to download Go. Please check your internet connection.\"\n    exit 1\nfi\n\necho \"Extracting Go to /usr/local...\"\nsudo rm -rf /usr/local/go\nsudo tar -C /usr/local -xzf \"$GO_PACKAGE\"\n\n# Set up environment\necho 'export PATH=$PATH:/usr/local/go/bin' | sudo tee /etc/profile.d/go.sh\nsudo chmod +x /etc/profile.d/go.sh\n\n# Clean up\ncd - > /dev/null\nrm -rf \"$TMP_DIR\"\n\necho \"Go $GO_VERSION installed successfully.\"\necho \"Please restart your terminal or run: source /etc/profile.d/go.sh\"",
+      "elevated": false,
+      "optional": false,
+      "condition": "! command -v go >/dev/null 2>&1 || [ \"$(go version | awk '{print $3}' | sed 's/go//' | cut -d. -f1-2 2>/dev/null || echo '0.0')\" != \"1.24\" ]",
+      "depends_on": ["Update System Packages"]
+    },
+    {
+      "name": "Install System Dependencies",
+      "description": "Install required system packages for I2C and development tools",
+      "type": "command",
+      "commands": [
+        "sudo apt-get install -y i2c-tools",
+        "sudo apt-get install -y curl wget",
+        "sudo apt-get install -y build-essential",
+        "sudo apt-get install -y git"
+      ],
+      "elevated": true,
+      "optional": false,
+      "condition": "! dpkg -l | grep -q i2c-tools",
+      "depends_on": ["Update System Packages"]
+    },
+    {
+      "name": "Enable I2C Interface",
+      "description": "Enable I2C kernel module and interface configuration",
+      "type": "script",
+      "script": "#!/bin/bash\nset -e\n\necho \"Enabling I2C interface...\"\nI2C_ENABLED=false\n\n# Add i2c-dev to modules if not present\nif ! grep -q \"^i2c-dev\" /etc/modules; then\n    echo \"Adding i2c-dev to /etc/modules...\"\n    echo \"i2c-dev\" | sudo tee -a /etc/modules\n    I2C_ENABLED=true\nelse\n    echo \"i2c-dev already in /etc/modules.\"\nfi\n\n# Enable I2C in config.txt if it exists (Raspberry Pi specific)\nif [ -f \"/boot/config.txt\" ]; then\n    if ! grep -q \"^dtparam=i2c_arm=on\" /boot/config.txt; then\n        echo \"Enabling I2C in /boot/config.txt...\"\n        echo \"dtparam=i2c_arm=on\" | sudo tee -a /boot/config.txt\n        I2C_ENABLED=true\n    else\n        echo \"I2C already enabled in /boot/config.txt.\"\n    fi\nfi\n\n# Load module immediately\nif [ \"$I2C_ENABLED\" = true ]; then\n    echo \"Loading I2C kernel module...\"\n    sudo modprobe i2c-dev\n    echo \"I2C interface has been enabled.\"\nelse\n    echo \"I2C interface was already enabled.\"\nfi",
+      "elevated": false,
+      "optional": false,
+      "condition": "! lsmod | grep -q i2c_dev",
+      "depends_on": ["Install System Dependencies"]
+    },
+    {
+      "name": "Create RockPi Penta Configuration",
+      "description": "Create default configuration file for RockPi Penta service",
+      "type": "file",
+      "commands": ["/etc/rockpi-penta.conf", "644"],
+      "script": "[fan]\n# When the temperature is above lv0 (35°C), the fan at 25% power,\n# and lv1 at 50% power, lv2 at 75% power, lv3 at 100% power.\n# When the temperature is below lv0, the fan is turned off.\nlv0 = 35\nlv1 = 40\nlv2 = 45\nlv3 = 50\n\n[key]\n# You can customize the function of the key, currently available functions are\n# slider: oled display next page\n# switch: fan turn on/off switch\n# reboot, poweroff\nclick = slider\ntwice = switch\npress = none\n\n[time]\n# twice: maximum time between double clicking (seconds)\n# press: long press time (seconds)\ntwice = 0.7\npress = 1.8\n\n[slider]\n# Whether the oled auto display next page and the time interval (seconds)\nauto = true\ntime = 10\n\n[oled]\n# Whether rotate the text of oled 180 degrees, whether use Fahrenheit\nrotate = false\nf-temp = false\n",
+      "elevated": true,
+      "optional": false,
+      "condition": "[ ! -f \"/etc/rockpi-penta.conf\" ]",
+      "depends_on": ["Enable I2C Interface"]
+    },
+    {
+      "name": "Create Systemd Service",
+      "description": "Create systemd service file for RockPi Penta service",
+      "type": "file",
+      "commands": ["/etc/systemd/system/rockpi-penta.service", "644"],
+      "script": "[Unit]\nDescription=RockPi Penta Service\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/rockpi-penta-service\nEnvironment=\"HARDWARE_PWM=0\"\nEnvironment=\"FAN_CHIP=gpiochip0\"\nEnvironment=\"FAN_LINE=18\"\nEnvironment=\"BUTTON_CHIP=gpiochip0\"\nEnvironment=\"BUTTON_LINE=17\"\nEnvironment=\"OLED_RESET=27\"\nRestart=on-failure\nRestartSec=10\nKillMode=process\n\n[Install]\nWantedBy=multi-user.target\n",
+      "elevated": true,
+      "optional": false,
+      "condition": "[ ! -f \"/etc/systemd/system/rockpi-penta.service\" ]",
+      "depends_on": ["Create RockPi Penta Configuration"]
+    },
+    {
+      "name": "Reload Systemd",
+      "description": "Reload systemd daemon to recognize new service",
+      "type": "command",
+      "commands": [
+        "sudo systemctl daemon-reload"
+      ],
+      "elevated": true,
+      "optional": false,
+      "depends_on": ["Create Systemd Service"]
+    },
+    {
+      "name": "Verify Installation",
+      "description": "Verify that all components are properly installed",
+      "type": "script",
+      "script": "#!/bin/bash\nset -e\n\necho \"Verifying RockPi Penta installation...\"\n\n# Check Go installation\nif command -v go >/dev/null 2>&1; then\n    echo \"✓ Go is installed: $(go version)\"\nelse\n    echo \"✗ Go is not installed\"\n    exit 1\nfi\n\n# Check I2C\nif lsmod | grep -q i2c_dev; then\n    echo \"✓ I2C module is loaded\"\nelse\n    echo \"⚠ I2C module not loaded (may require reboot)\"\nfi\n\n# Check configuration file\nif [ -f \"/etc/rockpi-penta.conf\" ]; then\n    echo \"✓ Configuration file exists\"\nelse\n    echo \"✗ Configuration file missing\"\n    exit 1\nfi\n\n# Check systemd service file\nif [ -f \"/etc/systemd/system/rockpi-penta.service\" ]; then\n    echo \"✓ Systemd service file exists\"\nelse\n    echo \"✗ Systemd service file missing\"\n    exit 1\nfi\n\n# Check system packages\nif dpkg -l | grep -q i2c-tools; then\n    echo \"✓ i2c-tools package is installed\"\nelse\n    echo \"✗ i2c-tools package missing\"\n    exit 1\nfi\n\necho \"\"\necho \"✓ All components verified successfully!\"\necho \"\"\necho \"Next steps:\"\necho \"1. Build the RockPi Penta service: './scripts/build.sh'\"\necho \"2. Enable the service: 'sudo systemctl enable rockpi-penta'\"\necho \"3. Start the service: 'sudo systemctl start rockpi-penta'\"\necho \"4. If I2C was just enabled, you may need to reboot first\"",
+      "elevated": false,
+      "optional": false,
+      "depends_on": ["Reload Systemd"]
+    }
+  ]
+} 
